@@ -13,7 +13,11 @@ from starlette.routing import Mount, Route
 
 from pokemon_world_mcp.auth import VcrApiKeyVerifier, api_key_http_middleware
 from pokemon_world_mcp.catalog import Catalog
-from pokemon_world_mcp.db import database_url_from_env, sqlite_path_from_env
+from pokemon_world_mcp.db import (
+    database_url_from_env,
+    pokemon_database_url_from_env,
+    sqlite_path_from_env,
+)
 from pokemon_world_mcp.game import GameError, GameService, dumps
 from pokemon_world_mcp.save_store import PostgresSaveStore, SaveStore, SqliteSaveStore
 
@@ -33,17 +37,17 @@ catalog = Catalog.load()
 
 
 def _build_store() -> SaveStore:
-    url = database_url_from_env()
+    url = pokemon_database_url_from_env()
     if url:
-        logger.info("using PostgresSaveStore")
+        logger.info("using PostgresSaveStore (POKEMON_DATABASE_URL)")
         return PostgresSaveStore(url)
     path = sqlite_path_from_env()
-    logger.info("DATABASE_URL unset — using SqliteSaveStore at %s", path)
+    logger.info("POKEMON_DATABASE_URL unset — using SqliteSaveStore at %s", path)
     return SqliteSaveStore(path)
 
 
 store = _build_store()
-_save_backend = "postgres" if database_url_from_env() else "sqlite"
+_save_backend = "postgres" if pokemon_database_url_from_env() else "sqlite"
 game = GameService(store, catalog)
 
 # Do not pass auth= to FastMCP: its RequireAuthMiddleware advertises OAuth via

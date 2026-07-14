@@ -74,16 +74,16 @@ class MemorySaveStore:
 
 
 class SqliteSaveStore:
-    """File-backed store for local dev when DATABASE_URL is unset."""
+    """File-backed store for local dev when POKEMON_DATABASE_URL is unset."""
 
     def __init__(self, path: str | Path, *, ensure: bool = True) -> None:
         self.path = Path(path)
         if ensure:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
-                conn.execute(SQLITE_SCHEMA_SQL)
+                conn.executescript(SQLITE_SCHEMA_SQL)
                 conn.commit()
-            logger.info("sqlite pokemon_saves schema ensured at %s", self.path)
+            logger.info("sqlite pokemon_saves + catalog_cache schema ensured at %s", self.path)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)

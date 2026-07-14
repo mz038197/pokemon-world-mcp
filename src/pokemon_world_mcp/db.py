@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS pokemon_saves (
     flags JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS pokemon_catalog_cache (
+    id INT PRIMARY KEY CHECK (id = 1),
+    payload JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 SQLITE_SCHEMA_SQL = """
@@ -35,6 +41,12 @@ CREATE TABLE IF NOT EXISTS pokemon_saves (
     flags TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS pokemon_catalog_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -45,7 +57,14 @@ def normalize_database_url(url: str) -> str:
 
 
 def database_url_from_env() -> str | None:
+    """Router Neon — api_keys only (auth)."""
     raw = os.environ.get("DATABASE_URL") or None
+    return normalize_database_url(raw) if raw else None
+
+
+def pokemon_database_url_from_env() -> str | None:
+    """Game Neon — pokemon_saves + pokemon_catalog_cache."""
+    raw = os.environ.get("POKEMON_DATABASE_URL") or None
     return normalize_database_url(raw) if raw else None
 
 
@@ -61,8 +80,9 @@ def sqlite_path_from_env() -> Path:
 
 
 def ensure_schema(database_url: str) -> None:
+    """Ensure game tables on the pokemon / game database URL (not router)."""
     url = normalize_database_url(database_url)
     with psycopg.connect(url) as conn:
         conn.execute(SCHEMA_SQL)
         conn.commit()
-    logger.info("pokemon_saves schema ensured")
+    logger.info("pokemon_saves + pokemon_catalog_cache schema ensured")
