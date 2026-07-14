@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "pokemon-world": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp/",
+      "headers": {
+        "Authorization": "Bearer vcr_sk_dev_local_only"
+      }
+    }
+  }
+}
