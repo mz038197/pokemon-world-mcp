@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from pokemon_world_mcp.experience import MAX_LEVEL
 from pokemon_world_mcp.models import MoveInfo, PokemonInstance, Species
 
 MOVE_SLOT_LIMIT = 4
-MAX_LEVEL = 100
 
-
-def exp_to_next(level: int) -> int:
-    if level >= MAX_LEVEL:
-        return 0
-    return level * 20
+# Re-export for callers that imported MAX_LEVEL from growth.
+__all__ = [
+    "MAX_LEVEL",
+    "MOVE_SLOT_LIMIT",
+    "apply_stats",
+    "calc_stats",
+    "known_move_names",
+    "moves_for_level",
+    "moves_learned_at",
+    "replace_move",
+    "try_learn_move",
+]
 
 
 def calc_stats(species: Species, level: int) -> tuple[int, int, int, int]:
