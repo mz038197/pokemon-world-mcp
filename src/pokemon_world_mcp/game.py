@@ -6,10 +6,14 @@ from typing import Any
 
 from pokemon_world_mcp.battle import calc_damage, catch_chance, find_move, flee_chance
 from pokemon_world_mcp.catalog import STARTERS, Catalog
-from pokemon_world_mcp.growth import (
+from pokemon_world_mcp.experience import (
     MAX_LEVEL,
-    apply_stats,
+    battle_exp_yield,
     exp_to_next,
+    total_exp_at,
+)
+from pokemon_world_mcp.growth import (
+    apply_stats,
     known_move_names,
     moves_learned_at,
     replace_move,
@@ -56,7 +60,34 @@ class GameService:
         state = self.store.load(user_id)
         if state is None:
             raise GameError("no save found; call new_game first")
+        if self._migrate_party_exp(state):
+            self.store.save(state)
         return state
+
+    def _migrate_party_exp(self, state: GameState) -> bool:
+        """Coarse migration: legacy relative exp -> total_at(level)."""
+        changed = False
+        for mon in state.party:
+            if mon.exp_scheme == "total":
+                continue
+            try:
+                species = self.catalog.get(mon.name)
+                mon.exp = total_exp_at(species.growth_rate, mon.level)
+            except KeyError:
+                mon.exp = total_exp_at("medium", mon.level)
+            mon.exp_scheme = "total"
+            changed = True
+        if state.battle is not None:
+            enemy = state.battle.enemy
+            if enemy.exp_scheme != "total":
+                try:
+                    species = self.catalog.get(enemy.name)
+                    enemy.exp = total_exp_at(species.growth_rate, enemy.level)
+                except KeyError:
+                    enemy.exp = total_exp_at("medium", enemy.level)
+                enemy.exp_scheme = "total"
+                changed = True
+        return changed
 
     def _persist(self, state: GameState) -> None:
         distinct = {p.name for p in state.party}
@@ -204,20 +235,18 @@ class GameService:
         return paused
 
     def _process_growth(self, state: GameState, party_index: int, log: list[str]) -> None:
-        """Consume exp for level-ups / learns / evolutions until pending or done."""
+        """Consume total exp for level-ups / learns / evolutions until pending or done."""
         while True:
             if state.pending_learn:
                 return
             mon = state.party[party_index]
             if mon.level >= MAX_LEVEL:
-                mon.exp = 0
                 return
-            need = exp_to_next(mon.level)
+            species = self.catalog.get(mon.name)
+            need = total_exp_at(species.growth_rate, mon.level + 1)
             if mon.exp < need:
                 return
-            mon.exp -= need
             mon.level += 1
-            species = self.catalog.get(mon.name)
             apply_stats(mon, species, preserve_hp_ratio=True)
             log.append(f"{mon.name} grew to level {mon.level}!")
             for move in moves_learned_at(species, mon.level):
@@ -226,8 +255,18 @@ class GameService:
             if self._try_evolve(state, party_index, log):
                 return
 
-    def _grant_exp(self, state: GameState, amount: int, log: list[str]) -> int:
-        """Grant exp to current active. Returns party_index."""
+    def _grant_exp_from_enemy(
+        self,
+        state: GameState,
+        enemy: PokemonInstance,
+        log: list[str],
+    ) -> int:
+        """Grant battle yield exp to current active. Returns party_index."""
+        try:
+            base_exp = self.catalog.get(enemy.name).base_experience
+        except KeyError:
+            base_exp = 64
+        amount = battle_exp_yield(base_exp, enemy.level)
         idx = self._active_index(state)
         mon = state.party[idx]
         if mon.level < MAX_LEVEL:
@@ -235,7 +274,6 @@ class GameService:
             log.append(f"{mon.name} gained {amount} exp!")
             self._process_growth(state, idx, log)
         return idx
-
     def new_game(self, user_id: int, starter: str) -> dict[str, Any]:
         key = starter.strip().lower()
         if key not in STARTERS:
@@ -291,7 +329,12 @@ class GameService:
                     "name": p.name,
                     "level": p.level,
                     "exp": p.exp,
-                    "exp_to_next": exp_to_next(p.level),
+                    "exp_to_next": exp_to_next(
+                        self.catalog.get(p.name).growth_rate,
+                        p.level,
+                        p.exp,
+                    ),
+                    "growth_rate": self.catalog.get(p.name).growth_rate,
                     "types": p.types,
                     "hp": p.hp,
                     "max_hp": p.max_hp,
@@ -518,14 +561,13 @@ class GameService:
                 self.catalog.get(enemy.name),
                 level=enemy.level,
                 hp=enemy.max_hp,
-                exp=0,
             )
             caught.hp = caught.max_hp
             state.party.append(caught)
             log.append(f"Caught {enemy.name} (Lv{enemy.level})!")
             state.phase = "exploring"
             state.battle = None
-            self._grant_exp(state, enemy.level * 3, log)
+            self._grant_exp_from_enemy(state, enemy, log)
             self._persist(state)
             result: dict[str, Any] = {
                 "ok": True,
@@ -596,10 +638,10 @@ class GameService:
                 break
 
         if fainted_enemy:
-            enemy_level = enemy.level
+            defeated = enemy
             state.phase = "exploring"
             state.battle = None
-            self._grant_exp(state, enemy_level * 5, log)
+            self._grant_exp_from_enemy(state, defeated, log)
             self._persist(state)
             result: dict[str, Any] = {
                 "ok": True,
