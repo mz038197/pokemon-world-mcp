@@ -290,38 +290,112 @@ def _fallback_species() -> dict[str, Species]:
 
 
 class Catalog:
-    def __init__(self, species: dict[str, Species] | None = None) -> None:
+    def __init__(
+        self,
+        species: dict[str, Species] | None = None,
+        *,
+        timeout: float = 10.0,
+        loaded_at: float | None = None,
+    ) -> None:
+        import time
+
         self._species = species or _fallback_species()
+        self._timeout = timeout
+        self._loaded_at = time.time() if loaded_at is None else loaded_at
 
     @classmethod
     def load(cls, *, timeout: float = 10.0) -> Catalog:
-        base = _fallback_species()
+        species, loaded_at = cls._resolve_species(timeout=timeout)
+        return cls(species, timeout=timeout, loaded_at=loaded_at)
+
+    @staticmethod
+    def _epoch_from_updated_at(updated_at) -> float:
+        from datetime import timezone
+
+        ts = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+
+    @classmethod
+    def _resolve_species(
+        cls,
+        *,
+        timeout: float,
+    ) -> tuple[dict[str, Species], float]:
+        import time
+
+        from pokemon_world_mcp.catalog_cache import (
+            is_fresh,
+            load_catalog_cache_row,
+            save_catalog_cache,
+        )
+
+        cached_row = load_catalog_cache_row()
+        if cached_row and is_fresh(cached_row.updated_at):
+            logger.info(
+                "catalog loaded from fresh cache (%s species)",
+                len(cached_row.species),
+            )
+            # Align memory TTL with DB updated_at (do not reset the clock).
+            return cached_row.species, cls._epoch_from_updated_at(cached_row.updated_at)
+
         try:
             _refresh_growth_tables(timeout=timeout)
             fetched = _fetch_species(DEFAULT_SPECIES_IDS, timeout=timeout)
             if fetched:
+                base = _fallback_species()
                 base.update(fetched)
-                logger.info("catalog loaded %s species from PokéAPI", len(fetched))
+                save_catalog_cache(base)
+                logger.info("catalog fetched from PokéAPI (%s species)", len(fetched))
+                return base, time.time()
+            raise RuntimeError("PokéAPI returned no species")
         except Exception:
-            logger.exception("PokéAPI fetch failed; using fallback catalog")
-        return cls(base)
+            logger.exception("PokéAPI catalog fetch failed")
+
+        if cached_row and cached_row.species:
+            logger.warning("using stale catalog cache after PokéAPI failure")
+            # Start a new TTL window so we do not hammer PokéAPI on every read.
+            return cached_row.species, time.time()
+
+        base = _fallback_species()
+        logger.warning(
+            "catalog using in-memory fallback only (%s species); not writing to DB",
+            len(base),
+        )
+        return base, time.time()
+
+    def ensure_fresh(self) -> None:
+        """Reload from DB / PokéAPI when in-memory catalog exceeds TTL."""
+        import time
+
+        from pokemon_world_mcp.catalog_cache import catalog_cache_ttl_hours
+
+        ttl_sec = catalog_cache_ttl_hours() * 3600
+        if self._species and (time.time() - self._loaded_at) < ttl_sec:
+            return
+        self._species, self._loaded_at = type(self)._resolve_species(
+            timeout=self._timeout,
+        )
 
     def get(self, name: str) -> Species:
+        self.ensure_fresh()
         key = name.strip().lower()
         if key not in self._species:
             raise KeyError(f"unknown species: {name}")
         return self._species[key]
 
     def names(self) -> list[str]:
+        self.ensure_fresh()
         return sorted(self._species)
 
     def evolves_to(self, name: str) -> tuple[str, int] | None:
+        self.ensure_fresh()
         return EVOLUTIONS.get(name.strip().lower())
 
     def wild_pool(self) -> list[str]:
         """Union of all first-stage non-starter wilds (for tests)."""
         from pokemon_world_mcp.world import ALL_WILD_SPECIES
 
+        self.ensure_fresh()
         return [n for n in ALL_WILD_SPECIES if n in self._species]
 
 
