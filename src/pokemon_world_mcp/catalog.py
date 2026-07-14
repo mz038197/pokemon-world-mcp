@@ -243,7 +243,50 @@ def _fallback_species() -> dict[str, Species]:
             (48, "shadow-claw", "ghost", 70),
         )),
     ]
-    return {s.name: s for s in specs}
+    # Official-ish base_experience + growth_rate (PokéAPI / species).
+    meta: dict[str, tuple[int, str]] = {
+        "bulbasaur": (64, "medium-slow"),
+        "ivysaur": (142, "medium-slow"),
+        "venusaur": (236, "medium-slow"),
+        "charmander": (62, "medium-slow"),
+        "charmeleon": (142, "medium-slow"),
+        "charizard": (240, "medium-slow"),
+        "squirtle": (63, "medium-slow"),
+        "wartortle": (142, "medium-slow"),
+        "blastoise": (239, "medium-slow"),
+        "pidgey": (50, "medium-slow"),
+        "pidgeotto": (122, "medium-slow"),
+        "pidgeot": (216, "medium-slow"),
+        "rattata": (51, "medium"),
+        "raticate": (145, "medium"),
+        "pikachu": (112, "medium"),
+        "raichu": (243, "medium"),
+        "jigglypuff": (95, "fast"),
+        "wigglytuff": (218, "fast"),
+        "meowth": (58, "medium"),
+        "persian": (154, "medium"),
+        "geodude": (60, "medium-slow"),
+        "graveler": (137, "medium-slow"),
+        "golem": (223, "medium-slow"),
+        "gastly": (62, "medium-slow"),
+        "haunter": (142, "medium-slow"),
+        "gengar": (250, "medium-slow"),
+    }
+    out: dict[str, Species] = {}
+    for s in specs:
+        be, gr = meta.get(s.name, (64, "medium-slow"))
+        out[s.name] = Species(
+            name=s.name,
+            types=s.types,
+            hp=s.hp,
+            attack=s.attack,
+            defense=s.defense,
+            speed=s.speed,
+            learnset=s.learnset,
+            base_experience=be,
+            growth_rate=gr,
+        )
+    return out
 
 
 class Catalog:
@@ -254,6 +297,7 @@ class Catalog:
     def load(cls, *, timeout: float = 10.0) -> Catalog:
         base = _fallback_species()
         try:
+            _refresh_growth_tables(timeout=timeout)
             fetched = _fetch_species(DEFAULT_SPECIES_IDS, timeout=timeout)
             if fetched:
                 base.update(fetched)
@@ -341,6 +385,13 @@ def _fetch_species(ids: list[int], *, timeout: float) -> dict[str, Species]:
             stats = _stat_map(data["stats"])
             types = [t["type"]["name"] for t in sorted(data["types"], key=lambda x: x["slot"])]
             learnset = _build_learnset(client, data.get("moves") or [])
+            base_exp = int(data.get("base_experience") or 64)
+            growth_rate = "medium-slow"
+            try:
+                species_data = client.get(f"/pokemon-species/{sid}").raise_for_status().json()
+                growth_rate = str(species_data.get("growth_rate", {}).get("name") or growth_rate)
+            except Exception:
+                logger.warning("failed to load growth_rate for %s; using %s", name, growth_rate)
             out[name] = Species(
                 name=name,
                 types=types,
@@ -349,5 +400,36 @@ def _fetch_species(ids: list[int], *, timeout: float) -> dict[str, Species]:
                 defense=stats.get("defense", 40),
                 speed=stats.get("speed", 40),
                 learnset=learnset,
+                base_experience=base_exp,
+                growth_rate=growth_rate,
             )
     return out
+
+
+def _refresh_growth_tables(*, timeout: float) -> None:
+    """Overlay in-memory tables from PokéAPI when online."""
+    from pokemon_world_mcp.experience import MAX_LEVEL, apply_growth_tables_from_api
+
+    tables: dict[str, list[int]] = {}
+    with httpx.Client(base_url=POKEAPI_BASE, timeout=timeout) as client:
+        for gid in range(1, 7):
+            data = client.get(f"/growth-rate/{gid}").raise_for_status().json()
+            name = str(data["name"])
+            vals = [0] * (MAX_LEVEL + 1)
+            seen: set[int] = set()
+            for row in data.get("levels") or []:
+                lv = int(row["level"])
+                if 1 <= lv <= MAX_LEVEL:
+                    vals[lv] = int(row["experience"])
+                    seen.add(lv)
+            vals[1] = 0
+            seen.add(1)
+            missing = [lv for lv in range(1, MAX_LEVEL + 1) if lv not in seen]
+            if missing:
+                raise ValueError(
+                    f"growth-rate {name} omitted levels from PokéAPI: "
+                    f"{missing[0]}..{missing[-1]} ({len(missing)} missing)"
+                )
+            tables[name] = vals
+    apply_growth_tables_from_api(tables)
+    logger.info("growth-rate tables refreshed from PokéAPI (%s)", ", ".join(sorted(tables)))

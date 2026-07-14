@@ -25,6 +25,8 @@ class Species:
     defense: int
     speed: int
     learnset: list[tuple[int, MoveInfo]]
+    base_experience: int = 64
+    growth_rate: str = "medium-slow"
 
 
 @dataclass
@@ -66,6 +68,7 @@ class PokemonInstance:
     moves: list[MoveInfo]
     level: int = 5
     exp: int = 0
+    exp_scheme: str = "total"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +82,7 @@ class PokemonInstance:
             "moves": [asdict(m) for m in self.moves],
             "level": self.level,
             "exp": self.exp,
+            "exp_scheme": self.exp_scheme,
         }
 
     @classmethod
@@ -91,6 +95,17 @@ class PokemonInstance:
             )
             for m in data.get("moves") or []
         ]
+        # Dual defaults are intentional:
+        # - Runtime / from_species: exp_scheme="total" (cumulative total exp).
+        # - Deserializing old saves: missing/blank exp_scheme => "legacy"
+        #   (relative-to-next) so GameService._migrate_party_exp can rewrite.
+        if "exp_scheme" not in data:
+            scheme = "legacy"
+        else:
+            raw = data.get("exp_scheme")
+            scheme = str(raw).strip() if raw is not None else ""
+            if not scheme:
+                scheme = "legacy"
         return cls(
             name=str(data["name"]),
             types=list(data.get("types") or []),
@@ -102,6 +117,7 @@ class PokemonInstance:
             moves=moves,
             level=int(data["level"]) if "level" in data else 5,
             exp=int(data["exp"]) if "exp" in data else 0,
+            exp_scheme=scheme,
         )
 
     @classmethod
@@ -111,10 +127,14 @@ class PokemonInstance:
         *,
         level: int = 5,
         hp: int | None = None,
-        exp: int = 0,
+        exp: int | None = None,
     ) -> PokemonInstance:
+        from pokemon_world_mcp.experience import total_exp_at
         from pokemon_world_mcp.growth import apply_stats, moves_for_level
 
+        # Under exp_scheme="total", the level floor (== zero progress to next)
+        # is total_exp_at(...), not 0 (0 would desync level vs cumulative exp).
+        total = total_exp_at(species.growth_rate, level) if exp is None else exp
         mon = cls(
             name=species.name,
             types=list(species.types),
@@ -125,7 +145,8 @@ class PokemonInstance:
             speed=1,
             moves=moves_for_level(species, level),
             level=level,
-            exp=exp,
+            exp=total,
+            exp_scheme="total",
         )
         apply_stats(mon, species, preserve_hp_ratio=False)
         if hp is not None:
