@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Iterable
 
 import httpx
@@ -292,6 +293,7 @@ def _fallback_species() -> dict[str, Species]:
 # After PokéAPI failure, skip re-fetch for this long (avoid hammering) while
 # still preserving the cache updated_at clock (no fake 24h TTL reset).
 API_FAIL_BACKOFF_SEC = 300.0
+_API_FAIL_LOCK = threading.Lock()
 
 
 class Catalog:
@@ -330,6 +332,16 @@ class Catalog:
         return now - catalog_cache_ttl_hours() * 3600
 
     @classmethod
+    def _snapshot_api_fail_at(cls) -> float | None:
+        with _API_FAIL_LOCK:
+            return cls._last_api_fail_at
+
+    @classmethod
+    def _set_api_fail_at(cls, value: float | None) -> None:
+        with _API_FAIL_LOCK:
+            cls._last_api_fail_at = value
+
+    @classmethod
     def _resolve_species(
         cls,
         *,
@@ -353,10 +365,8 @@ class Catalog:
             return cached_row.species, cls._epoch_from_updated_at(cached_row.updated_at)
 
         now = time.time()
-        if (
-            cls._last_api_fail_at is not None
-            and (now - cls._last_api_fail_at) < API_FAIL_BACKOFF_SEC
-        ):
+        last_fail = cls._snapshot_api_fail_at()
+        if last_fail is not None and (now - last_fail) < API_FAIL_BACKOFF_SEC:
             if cached_row and cached_row.species:
                 logger.warning("PokéAPI backoff; using stale catalog cache")
                 return cached_row.species, cls._epoch_from_updated_at(cached_row.updated_at)
@@ -371,12 +381,12 @@ class Catalog:
                 base = _fallback_species()
                 base.update(fetched)
                 save_catalog_cache(base)
-                cls._last_api_fail_at = None
+                cls._set_api_fail_at(None)
                 logger.info("catalog fetched from PokéAPI (%s species)", len(fetched))
                 return base, time.time()
             raise RuntimeError("PokéAPI returned no species")
         except Exception:
-            cls._last_api_fail_at = time.time()
+            cls._set_api_fail_at(time.time())
             logger.exception("PokéAPI catalog fetch failed")
 
         if cached_row and cached_row.species:
