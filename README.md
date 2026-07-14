@@ -17,8 +17,9 @@ Collect **3 different species** in your party.
 
 ## Progression
 
-- **Exp:** active Pokémon gains `enemy.level * 5` on win, `enemy.level * 3` on catch
-- **Level-up:** stats scale with level; may learn moves from the species learnset
+- **Exp (official curves):** each species has a PokéAPI `growth_rate` and cumulative total-exp table (six rates). `party.exp` is **total** experience.
+- **Battle yield:** active Pokémon gains `floor(enemy.base_experience × enemy.level / 7)` on win **or** catch
+- **Level-up:** when total exp reaches the next level threshold; stats scale with level; may learn moves from the species learnset
 - **Moves:** max **4**. If a new move is offered while full, resolve with `battle_action(replace_move, forget_move_name=...)` or `skip_learn` before exploring/battling again
 - **Evolution:** automatic at species thresholds (e.g. bulbasaur → ivysaur at 16)
 
