@@ -5,8 +5,7 @@ primary_region = "sin"
 [build]
 
 [env]
-  PUBLIC_URL = "https://pokemon-world-mcp.fly.dev"
-  # After custom domain: PUBLIC_URL = "https://poke.vanscoding.com"
+  PUBLIC_URL = "https://poke.vanscoding.com"
 
 [http_service]
   internal_port = 8080

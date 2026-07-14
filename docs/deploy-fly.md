@@ -79,8 +79,8 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1
 
 1. `fly certs add poke.vanscoding.com`
 2. DNS：子網域 CNAME → `pokemon-world-mcp.fly.dev`
-3. 把 `fly.toml` `[env] PUBLIC_URL` 改成 `https://poke.vanscoding.com`
-4. 再 deploy 一次
+3. `fly.toml` `[env] PUBLIC_URL` 已設為 `https://poke.vanscoding.com`
+4. 再 deploy 一次（改 DNS／憑證後）
 
 ## CI（GitHub Actions）
 
