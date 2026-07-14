@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1
 
 `--ha=false` 維持單機器。
 
-設定 CI（必備）：見下方 **CI（GitHub Actions）** — 建立 `FLY_API_TOKEN` 後 push `main` 即自動 deploy。
+設定 CI（必備）：見下方 **CI（GitHub Actions）** — 建立 `FLY_API_TOKEN` 後 push `master` 即自動 deploy。
 
 綁自訂網域後：
 
@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1
 
 ## CI（GitHub Actions）
 
-Workflow：`.github/workflows/fly-deploy.yml` — push `main` 時 `flyctl deploy --remote-only --ha=false`。
+Workflow：`.github/workflows/fly-deploy.yml` — push `master` 時 `flyctl deploy --remote-only --ha=false`。
 
 **一次性設定**（repo secrets，CI 不覆寫 Fly secrets）：
 
