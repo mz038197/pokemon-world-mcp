@@ -23,6 +23,7 @@ from pokemon_world_mcp.models import MoveInfo, Species
 def _clear_db_env(monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("POKEMON_DATABASE_URL", raising=False)
+    Catalog._last_api_fail_at = None
 
 
 def test_species_roundtrip_dict() -> None:
@@ -145,6 +146,50 @@ def test_catalog_load_api_failure_fallback_does_not_write(
     cat = Catalog.load(timeout=0.1)
     assert "bulbasaur" in cat.names()
     assert load_catalog_cache() is None
+
+
+def test_stale_cache_api_fail_preserves_updated_at_clock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """API failure must not reset TTL; backoff prevents hammering instead."""
+    db = tmp_path / "stale_fail.db"
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("SQLITE_PATH", str(db))
+    monkeypatch.setenv("CATALOG_CACHE_TTL_HOURS", "24")
+
+    species = _fallback_species()
+    species["bulbasaur"].base_experience = 555
+    save_catalog_cache(species)
+    age_hours = 30 * 24  # 30 days
+    old = (datetime.now(timezone.utc) - timedelta(hours=age_hours)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE pokemon_catalog_cache SET updated_at = ? WHERE id = 1",
+            (old,),
+        )
+        conn.commit()
+
+    calls = {"n": 0}
+
+    def boom(*_a, **_k):
+        calls["n"] += 1
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("pokemon_world_mcp.catalog._fetch_species", boom)
+    monkeypatch.setattr("pokemon_world_mcp.catalog._refresh_growth_tables", boom)
+
+    cat = Catalog.load(timeout=0.1)
+    assert cat.get("bulbasaur").base_experience == 555
+    age_sec = time.time() - cat._loaded_at
+    assert age_sec > 29 * 24 * 3600
+    assert calls["n"] == 1
+
+    # ensure_fresh sees expired clock but backoff skips a second API hit
+    cat.ensure_fresh()
+    assert calls["n"] == 1
+    assert cat.get("bulbasaur").base_experience == 555
 
 
 def test_catalog_stale_cache_refetches(tmp_path: Path, monkeypatch) -> None:

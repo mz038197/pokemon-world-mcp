@@ -289,7 +289,14 @@ def _fallback_species() -> dict[str, Species]:
     return out
 
 
+# After PokéAPI failure, skip re-fetch for this long (avoid hammering) while
+# still preserving the cache updated_at clock (no fake 24h TTL reset).
+API_FAIL_BACKOFF_SEC = 300.0
+
+
 class Catalog:
+    _last_api_fail_at: float | None = None
+
     def __init__(
         self,
         species: dict[str, Species] | None = None,
@@ -316,6 +323,13 @@ class Catalog:
         return ts.timestamp()
 
     @classmethod
+    def _expired_loaded_at(cls, *, now: float) -> float:
+        """Mark memory as already past TTL so ensure_fresh keeps trying (subject to backoff)."""
+        from pokemon_world_mcp.catalog_cache import catalog_cache_ttl_hours
+
+        return now - catalog_cache_ttl_hours() * 3600
+
+    @classmethod
     def _resolve_species(
         cls,
         *,
@@ -338,6 +352,18 @@ class Catalog:
             # Align memory TTL with DB updated_at (do not reset the clock).
             return cached_row.species, cls._epoch_from_updated_at(cached_row.updated_at)
 
+        now = time.time()
+        if (
+            cls._last_api_fail_at is not None
+            and (now - cls._last_api_fail_at) < API_FAIL_BACKOFF_SEC
+        ):
+            if cached_row and cached_row.species:
+                logger.warning("PokéAPI backoff; using stale catalog cache")
+                return cached_row.species, cls._epoch_from_updated_at(cached_row.updated_at)
+            base = _fallback_species()
+            logger.warning("PokéAPI backoff; using in-memory fallback")
+            return base, cls._expired_loaded_at(now=now)
+
         try:
             _refresh_growth_tables(timeout=timeout)
             fetched = _fetch_species(DEFAULT_SPECIES_IDS, timeout=timeout)
@@ -345,23 +371,25 @@ class Catalog:
                 base = _fallback_species()
                 base.update(fetched)
                 save_catalog_cache(base)
+                cls._last_api_fail_at = None
                 logger.info("catalog fetched from PokéAPI (%s species)", len(fetched))
                 return base, time.time()
             raise RuntimeError("PokéAPI returned no species")
         except Exception:
+            cls._last_api_fail_at = time.time()
             logger.exception("PokéAPI catalog fetch failed")
 
         if cached_row and cached_row.species:
             logger.warning("using stale catalog cache after PokéAPI failure")
-            # Start a new TTL window so we do not hammer PokéAPI on every read.
-            return cached_row.species, time.time()
+            # Keep original updated_at — do not grant a fresh 24h TTL.
+            return cached_row.species, cls._epoch_from_updated_at(cached_row.updated_at)
 
         base = _fallback_species()
         logger.warning(
             "catalog using in-memory fallback only (%s species); not writing to DB",
             len(base),
         )
-        return base, time.time()
+        return base, cls._expired_loaded_at(now=time.time())
 
     def ensure_fresh(self) -> None:
         """Reload from DB / PokéAPI when in-memory catalog exceeds TTL."""
