@@ -7,13 +7,27 @@ from pokemon_world_mcp.models import MoveInfo, PokemonInstance
 
 
 def calc_damage(attacker: PokemonInstance, defender: PokemonInstance, move: MoveInfo) -> int:
-    if move.power <= 0:
+    """Official Gen III+ core damage (no random / crit / weather / burn)."""
+    if move.power <= 0 or move.damage_class == "status":
         return 0
-    ratio = attacker.attack / max(1, defender.defense)
+    if move.damage_class == "special":
+        a = attacker.special_attack
+        d = max(1, defender.special_defense)
+    else:
+        a = attacker.attack
+        d = max(1, defender.defense)
+
+    level = max(1, attacker.level)
+    # ((((2 * Level / 5 + 2) * Power * A / D) / 50) + 2)
+    step1 = (2 * level) // 5 + 2
+    step2 = (step1 * move.power * a) // d
+    base = step2 // 50 + 2
+
+    stab = 1.5 if move.type in attacker.types else 1.0
     mult = type_multiplier(move.type, defender.types)
-    level_factor = max(1, attacker.level) / 50
-    raw = ratio * move.power * mult * 0.4 * level_factor
-    return max(1, int(math.floor(raw))) if mult > 0 else 0
+    if mult <= 0:
+        return 0
+    return max(1, int(math.floor(base * stab * mult)))
 
 
 def find_move(pokemon: PokemonInstance, move_name: str) -> MoveInfo | None:

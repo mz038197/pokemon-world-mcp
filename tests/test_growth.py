@@ -51,10 +51,11 @@ def test_exp_to_next_total_scheme() -> None:
 def test_stats_scale() -> None:
     cat = Catalog()
     sp = cat.get("bulbasaur")
-    hp5, atk5, _, _ = calc_stats(sp, 5)
-    hp20, atk20, _, _ = calc_stats(sp, 20)
+    hp5, atk5, _, spa5, _, _ = calc_stats(sp, 5)
+    hp20, atk20, _, spa20, _, _ = calc_stats(sp, 20)
     assert hp20 > hp5
     assert atk20 > atk5
+    assert spa20 > spa5
 
 
 def test_moves_for_level_caps_at_four() -> None:

@@ -19,6 +19,9 @@ Collect **3 different species** in your party.
 ## Progression
 
 - **Exp (official curves):** each species has a PokéAPI `growth_rate` and cumulative total-exp table (six rates). `party.exp` is **total** experience.
+- **Stats (official Gen III+, IV=0 / EV=0):** HP and other stats use `floor(2×Base×Level/100)+…`; SpA/SpD included
+- **Damage (official core):** `((((2×Level/5)+2)×Power×A/D)/50)+2`, then × STAB × type; physical/special from move `damage_class`; no random/crit/weather
+- **Type chart:** current-gen PokéAPI `damage_relations` (cached with catalog); offline fallback if API fails
 - **Battle yield:** active Pokémon gains `floor(enemy.base_experience × enemy.level / 7)` on win **or** catch
 - **Level-up:** when total exp reaches the next level threshold; stats scale with level; may learn moves from the species learnset
 - **Moves:** max **4**. If a new move is offered while full, resolve with `battle_action(replace_move, forget_move_name=...)` or `skip_learn` before exploring/battling again

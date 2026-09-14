@@ -32,20 +32,33 @@ def test_species_roundtrip_dict() -> None:
     again = species_from_dict("bulbasaur", data)
     assert again.name == "bulbasaur"
     assert again.hp == sp.hp
+    assert again.special_attack == sp.special_attack
+    assert again.special_defense == sp.special_defense
     assert again.base_experience == sp.base_experience
     assert again.growth_rate == sp.growth_rate
     assert len(again.learnset) == len(sp.learnset)
     assert again.learnset[0][1].name == sp.learnset[0][1].name
+    assert again.learnset[0][1].damage_class == sp.learnset[0][1].damage_class
+
+
+def test_payload_rejects_old_version() -> None:
+    species = _fallback_species()
+    payload = catalog_payload_from_species(species)
+    payload["version"] = 1
+    assert species_from_catalog_payload(payload) is None
 
 
 def test_payload_roundtrip() -> None:
     species = _fallback_species()
     payload = catalog_payload_from_species(species)
-    assert payload["version"] == 1
+    assert payload["version"] == 2
+    assert "type_chart" in payload
+    assert "water" in payload["type_chart"]
     loaded = species_from_catalog_payload(payload)
     assert loaded is not None
     assert "pikachu" in loaded
     assert loaded["pikachu"].growth_rate == "medium"
+    assert loaded["pikachu"].special_attack == species["pikachu"].special_attack
 
 
 def test_is_fresh_and_ttl(monkeypatch) -> None:
@@ -107,6 +120,8 @@ def test_catalog_load_empty_fetches_api_and_saves(tmp_path: Path, monkeypatch) -
             hp=45,
             attack=49,
             defense=49,
+            special_attack=65,
+            special_defense=65,
             speed=45,
             learnset=[(1, MoveInfo(name="tackle", type="normal", power=40))],
             base_experience=777,
@@ -218,6 +233,8 @@ def test_catalog_stale_cache_refetches(tmp_path: Path, monkeypatch) -> None:
             hp=45,
             attack=49,
             defense=49,
+            special_attack=65,
+            special_defense=65,
             speed=45,
             learnset=[(1, MoveInfo(name="tackle", type="normal", power=40))],
             base_experience=222,

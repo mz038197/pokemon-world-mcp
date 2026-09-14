@@ -144,12 +144,19 @@ class GameService:
             "pokemon": mon.name,
             "level": mon.level,
             "current_moves": [
-                {"name": m.name, "type": m.type, "power": m.power} for m in mon.moves
+                {
+                    "name": m.name,
+                    "type": m.type,
+                    "power": m.power,
+                    "damage_class": m.damage_class,
+                }
+                for m in mon.moves
             ],
             "new_move": {
                 "name": item.new_move.name,
                 "type": item.new_move.type,
                 "power": item.new_move.power,
+                "damage_class": item.new_move.damage_class,
             },
             "reason": item.reason,
             "actions": ["replace_move", "skip_learn"],
@@ -338,7 +345,20 @@ class GameService:
                     "types": p.types,
                     "hp": p.hp,
                     "max_hp": p.max_hp,
-                    "moves": [m.name for m in p.moves],
+                    "attack": p.attack,
+                    "defense": p.defense,
+                    "special_attack": p.special_attack,
+                    "special_defense": p.special_defense,
+                    "speed": p.speed,
+                    "moves": [
+                        {
+                            "name": m.name,
+                            "type": m.type,
+                            "power": m.power,
+                            "damage_class": m.damage_class,
+                        }
+                        for m in p.moves
+                    ],
                 }
                 for p in state.party
             ],
@@ -426,7 +446,20 @@ class GameService:
                 "hp": you.hp,
                 "max_hp": you.max_hp,
                 "types": you.types,
-                "moves": [{"name": m.name, "type": m.type, "power": m.power} for m in you.moves],
+                "attack": you.attack,
+                "defense": you.defense,
+                "special_attack": you.special_attack,
+                "special_defense": you.special_defense,
+                "speed": you.speed,
+                "moves": [
+                    {
+                        "name": m.name,
+                        "type": m.type,
+                        "power": m.power,
+                        "damage_class": m.damage_class,
+                    }
+                    for m in you.moves
+                ],
             },
             "enemy": {
                 "name": enemy.name,
@@ -434,6 +467,11 @@ class GameService:
                 "hp": enemy.hp,
                 "max_hp": enemy.max_hp,
                 "types": enemy.types,
+                "attack": enemy.attack,
+                "defense": enemy.defense,
+                "special_attack": enemy.special_attack,
+                "special_defense": enemy.special_defense,
+                "speed": enemy.speed,
             },
             "last_log": list(state.battle.last_log),
             "actions": actions,

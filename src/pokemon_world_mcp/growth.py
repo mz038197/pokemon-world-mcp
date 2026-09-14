@@ -21,23 +21,32 @@ __all__ = [
 ]
 
 
-def calc_stats(species: Species, level: int) -> tuple[int, int, int, int]:
-    """Return max_hp, attack, defense, speed for level."""
+def calc_stats(
+    species: Species, level: int
+) -> tuple[int, int, int, int, int, int]:
+    """Official Gen III+ stats with IV=0, EV=0, no nature.
+
+    Returns max_hp, attack, defense, special_attack, special_defense, speed.
+    """
     level = max(1, min(MAX_LEVEL, level))
-    max_hp = (species.hp * level) // 50 + level + 10
-    attack = (species.attack * level) // 50 + 5
-    defense = (species.defense * level) // 50 + 5
-    speed = (species.speed * level) // 50 + 5
-    return max_hp, attack, defense, speed
+    max_hp = (2 * species.hp * level) // 100 + level + 10
+    attack = (2 * species.attack * level) // 100 + 5
+    defense = (2 * species.defense * level) // 100 + 5
+    special_attack = (2 * species.special_attack * level) // 100 + 5
+    special_defense = (2 * species.special_defense * level) // 100 + 5
+    speed = (2 * species.speed * level) // 100 + 5
+    return max_hp, attack, defense, special_attack, special_defense, speed
 
 
 def apply_stats(mon: PokemonInstance, species: Species, *, preserve_hp_ratio: bool = True) -> None:
     old_max = mon.max_hp
     old_hp = mon.hp
-    max_hp, attack, defense, speed = calc_stats(species, mon.level)
+    max_hp, attack, defense, spa, spd, speed = calc_stats(species, mon.level)
     mon.max_hp = max_hp
     mon.attack = attack
     mon.defense = defense
+    mon.special_attack = spa
+    mon.special_defense = spd
     mon.speed = speed
     if not preserve_hp_ratio or old_max <= 0:
         mon.hp = max_hp
@@ -61,7 +70,7 @@ def moves_for_level(species: Species, level: int) -> list[MoveInfo]:
         seen.add(move.name)
         learned.append(replace(move))
     if not learned:
-        return [MoveInfo(name="tackle", type="normal", power=40)]
+        return [MoveInfo(name="tackle", type="normal", power=40, damage_class="physical")]
     if len(learned) > MOVE_SLOT_LIMIT:
         return learned[-MOVE_SLOT_LIMIT:]
     return learned

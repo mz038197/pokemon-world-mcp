@@ -19,11 +19,11 @@ from pokemon_world_mcp.db import (
     pokemon_database_url_from_env,
     sqlite_path_from_env,
 )
-from pokemon_world_mcp.models import MoveInfo, Species
+from pokemon_world_mcp.models import MoveInfo, Species, move_info_from_dict
 
 logger = logging.getLogger(__name__)
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 DEFAULT_TTL_HOURS = 24.0
 
 
@@ -31,6 +31,7 @@ DEFAULT_TTL_HOURS = 24.0
 class CatalogCacheRow:
     species: dict[str, Species]
     updated_at: datetime
+    type_chart: dict[str, dict[str, float]] | None = None
 
 
 def catalog_cache_ttl_hours() -> float:
@@ -77,6 +78,8 @@ def species_to_dict(species: Species) -> dict[str, Any]:
         "hp": species.hp,
         "attack": species.attack,
         "defense": species.defense,
+        "special_attack": species.special_attack,
+        "special_defense": species.special_defense,
         "speed": species.speed,
         "base_experience": species.base_experience,
         "growth_rate": species.growth_rate,
@@ -86,6 +89,7 @@ def species_to_dict(species: Species) -> dict[str, Any]:
                 "name": move.name,
                 "type": move.type,
                 "power": move.power,
+                "damage_class": move.damage_class,
             }
             for level, move in species.learnset
         ],
@@ -95,22 +99,21 @@ def species_to_dict(species: Species) -> dict[str, Any]:
 def species_from_dict(name: str, data: dict[str, Any]) -> Species:
     learnset: list[tuple[int, MoveInfo]] = []
     for item in data.get("learnset") or []:
-        learnset.append(
-            (
-                int(item["level"]),
-                MoveInfo(
-                    name=str(item["name"]),
-                    type=str(item["type"]),
-                    power=int(item["power"]),
-                ),
-            )
-        )
+        learnset.append((int(item["level"]), move_info_from_dict(item)))
+    attack = int(data["attack"])
+    defense = int(data["defense"])
     return Species(
         name=name,
         types=list(data.get("types") or []),
         hp=int(data["hp"]),
-        attack=int(data["attack"]),
-        defense=int(data["defense"]),
+        attack=attack,
+        defense=defense,
+        special_attack=int(data["special_attack"])
+        if "special_attack" in data
+        else attack,
+        special_defense=int(data["special_defense"])
+        if "special_defense" in data
+        else defense,
         speed=int(data["speed"]),
         learnset=learnset,
         base_experience=int(data.get("base_experience") or 64),
@@ -118,15 +121,25 @@ def species_from_dict(name: str, data: dict[str, Any]) -> Species:
     )
 
 
-def catalog_payload_from_species(species: dict[str, Species]) -> dict[str, Any]:
+def catalog_payload_from_species(
+    species: dict[str, Species],
+    *,
+    type_chart: dict[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    from pokemon_world_mcp.catalog import TYPE_CHART
+
+    chart = type_chart if type_chart is not None else TYPE_CHART
     return {
         "version": CACHE_VERSION,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "species": {name: species_to_dict(sp) for name, sp in species.items()},
+        "type_chart": {k: dict(v) for k, v in chart.items()},
     }
 
 
 def species_from_catalog_payload(payload: dict[str, Any]) -> dict[str, Species] | None:
+    if int(payload.get("version") or 0) != CACHE_VERSION:
+        return None
     raw = payload.get("species")
     if not isinstance(raw, dict) or not raw:
         return None
@@ -135,6 +148,20 @@ def species_from_catalog_payload(payload: dict[str, Any]) -> dict[str, Species] 
         if not isinstance(data, dict):
             continue
         out[str(name)] = species_from_dict(str(name), data)
+    return out or None
+
+
+def type_chart_from_catalog_payload(
+    payload: dict[str, Any],
+) -> dict[str, dict[str, float]] | None:
+    raw = payload.get("type_chart")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict[str, dict[str, float]] = {}
+    for atk, row in raw.items():
+        if not isinstance(row, dict):
+            continue
+        out[str(atk)] = {str(defn): float(mult) for defn, mult in row.items()}
     return out or None
 
 
@@ -161,8 +188,12 @@ def load_catalog_cache_row() -> CatalogCacheRow | None:
         return None
 
 
-def save_catalog_cache(species: dict[str, Species]) -> None:
-    payload = catalog_payload_from_species(species)
+def save_catalog_cache(
+    species: dict[str, Species],
+    *,
+    type_chart: dict[str, dict[str, float]] | None = None,
+) -> None:
+    payload = catalog_payload_from_species(species, type_chart=type_chart)
     url = pokemon_database_url_from_env()
     try:
         if url:
@@ -190,7 +221,11 @@ def _row_from_payload_and_updated(
     )
     if updated_at is None:
         updated_at = datetime.now(timezone.utc)
-    return CatalogCacheRow(species=species, updated_at=updated_at)
+    return CatalogCacheRow(
+        species=species,
+        updated_at=updated_at,
+        type_chart=type_chart_from_catalog_payload(payload),
+    )
 
 
 def _load_postgres(database_url: str) -> CatalogCacheRow | None:

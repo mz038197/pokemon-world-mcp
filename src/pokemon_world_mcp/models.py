@@ -14,6 +14,16 @@ class MoveInfo:
     name: str
     type: str
     power: int
+    damage_class: str = "physical"
+
+
+def move_info_from_dict(data: dict[str, Any]) -> MoveInfo:
+    return MoveInfo(
+        name=str(data["name"]),
+        type=str(data["type"]),
+        power=int(data["power"]),
+        damage_class=str(data.get("damage_class") or "physical"),
+    )
 
 
 @dataclass
@@ -23,6 +33,8 @@ class Species:
     hp: int
     attack: int
     defense: int
+    special_attack: int
+    special_defense: int
     speed: int
     learnset: list[tuple[int, MoveInfo]]
     base_experience: int = 64
@@ -44,14 +56,9 @@ class PendingLearn:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PendingLearn:
-        m = data["new_move"]
         return cls(
             party_index=int(data["party_index"]),
-            new_move=MoveInfo(
-                name=str(m["name"]),
-                type=str(m["type"]),
-                power=int(m["power"]),
-            ),
+            new_move=move_info_from_dict(data["new_move"]),
             reason=data.get("reason") or "level_up",  # type: ignore[arg-type]
         )
 
@@ -64,6 +71,8 @@ class PokemonInstance:
     hp: int
     attack: int
     defense: int
+    special_attack: int
+    special_defense: int
     speed: int
     moves: list[MoveInfo]
     level: int = 5
@@ -78,6 +87,8 @@ class PokemonInstance:
             "hp": self.hp,
             "attack": self.attack,
             "defense": self.defense,
+            "special_attack": self.special_attack,
+            "special_defense": self.special_defense,
             "speed": self.speed,
             "moves": [asdict(m) for m in self.moves],
             "level": self.level,
@@ -87,14 +98,7 @@ class PokemonInstance:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PokemonInstance:
-        moves = [
-            MoveInfo(
-                name=str(m["name"]),
-                type=str(m["type"]),
-                power=int(m["power"]),
-            )
-            for m in data.get("moves") or []
-        ]
+        moves = [move_info_from_dict(m) for m in data.get("moves") or []]
         # Dual defaults are intentional:
         # - Runtime / from_species: exp_scheme="total" (cumulative total exp).
         # - Deserializing old saves: missing/blank exp_scheme => "legacy"
@@ -106,13 +110,21 @@ class PokemonInstance:
             scheme = str(raw).strip() if raw is not None else ""
             if not scheme:
                 scheme = "legacy"
+        attack = int(data["attack"])
+        defense = int(data["defense"])
         return cls(
             name=str(data["name"]),
             types=list(data.get("types") or []),
             max_hp=int(data["max_hp"]),
             hp=int(data["hp"]),
-            attack=int(data["attack"]),
-            defense=int(data["defense"]),
+            attack=attack,
+            defense=defense,
+            special_attack=int(data["special_attack"])
+            if "special_attack" in data
+            else attack,
+            special_defense=int(data["special_defense"])
+            if "special_defense" in data
+            else defense,
             speed=int(data["speed"]),
             moves=moves,
             level=int(data["level"]) if "level" in data else 5,
@@ -142,6 +154,8 @@ class PokemonInstance:
             hp=1,
             attack=1,
             defense=1,
+            special_attack=1,
+            special_defense=1,
             speed=1,
             moves=moves_for_level(species, level),
             level=level,
