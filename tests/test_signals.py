@@ -16,11 +16,12 @@ import pytest
 
 from pokemon_world_mcp.auth import VcrApiKeyVerifier
 from pokemon_world_mcp.catalog import Catalog, _fallback_species, _fetch_type_chart
-from pokemon_world_mcp.game import GameError, GameService
+from pokemon_world_mcp.game import GameService
 from pokemon_world_mcp.save_store import MemorySaveStore
+from pokemon_world_mcp.signal_forwarder import SignalForwarder, start_signal_forwarding
 
 POKEMON_SOURCE = "pokemon-world-mcp"
-EXAMPLE_PATH = Path("tests/fixtures/signal_body.example.json")
+EXAMPLE_PATH = Path(__file__).resolve().parent / "fixtures" / "signal_body.example.json"
 
 os.environ["SQLITE_PATH"] = "/tmp/pokemon-world-mcp-signals-import.db"
 os.environ.pop("DATABASE_URL", None)
@@ -34,9 +35,7 @@ _forwarder_on_catalog_load: list[bool] = []
 
 def _tracking_catalog_load(*, timeout: float = 10.0):
     handlers = logging.getLogger("pokemon_world_mcp").handlers
-    _forwarder_on_catalog_load.append(
-        any(type(h).__name__ == "SignalForwarder" for h in handlers)
-    )
+    _forwarder_on_catalog_load.append(any(isinstance(h, SignalForwarder) for h in handlers))
     return Catalog()
 
 
@@ -47,7 +46,7 @@ try:
 finally:
     _catalog_load_patch.stop()
     for handler in list(logging.getLogger("pokemon_world_mcp").handlers):
-        if type(handler).__name__ == "SignalForwarder":
+        if isinstance(handler, SignalForwarder):
             handler.close()
     for key in ("VANS_SIGNALS_URL", "VANS_SIGNALS_TOKEN", "VANS_SIGNALS_SOURCE"):
         os.environ.pop(key, None)
@@ -148,8 +147,6 @@ def _reset_catalog_backoff() -> None:
 
 @pytest.fixture
 def signals(monkeypatch):
-    from pokemon_world_mcp.signal_forwarder import start_signal_forwarding
-
     receiver = _SignalsReceiver()
     monkeypatch.setenv("VANS_SIGNALS_URL", receiver.url)
     monkeypatch.setenv("VANS_SIGNALS_TOKEN", "pokemon-token")
@@ -189,7 +186,8 @@ def test_posted_json_matches_the_example_keys(signals) -> None:
     body = post["body"]
     assert body.keys() == example.keys()
     assert len(body) == 5
-    assert body["level"] == "ERROR"
+    assert example["level"] == "ERROR"
+    assert body["level"] == example["level"]
     assert body["source"] == POKEMON_SOURCE
     logged_at = datetime.fromisoformat(body["log_time"])
     assert logged_at.tzinfo is not None and logged_at.utcoffset() is not None
@@ -198,8 +196,6 @@ def test_posted_json_matches_the_example_keys(signals) -> None:
 
 
 def test_missing_destination_token_or_source_sends_nothing(monkeypatch) -> None:
-    from pokemon_world_mcp.signal_forwarder import start_signal_forwarding
-
     receiver = _SignalsReceiver()
     try:
         monkeypatch.setenv("VANS_SIGNALS_URL", receiver.url)
@@ -350,14 +346,17 @@ def test_db_down_in_memory_fallback_posts_one_or_two_signals_per_tool_call(
     monkeypatch.setattr("pokemon_world_mcp.catalog._refresh_growth_tables", boom_fetch)
 
     cat = Catalog(loaded_at=0)
-    svc = GameService(MemorySaveStore(), cat)
-    svc.new_game(7, "bulbasaur")
+    monkeypatch.setattr(pokemon_app, "_require_user_id", lambda: 7)
+    monkeypatch.setattr(pokemon_app, "game", GameService(MemorySaveStore(), cat))
+    raw = pokemon_app.new_game("bulbasaur")
+    assert json.loads(raw)["ok"] is True
     _wait_until(lambda: 1 <= len(receiver.posts) <= 2)
     first = len(receiver.posts)
     assert 1 <= first <= 2
 
     before = len(receiver.posts)
-    svc.new_game(8, "charmander")
+    monkeypatch.setattr(pokemon_app, "_require_user_id", lambda: 8)
+    pokemon_app.new_game("charmander")
     _wait_until(lambda: len(receiver.posts) - before >= 1)
     added = len(receiver.posts) - before
     assert 1 <= added <= 2
@@ -388,6 +387,36 @@ def test_catalog_cache_write_failure_posts_a_signal(
     _wait_until(
         lambda: any(
             "failed to save catalog cache" in post["body"]["message"]
+            for post in receiver.posts
+        )
+    )
+    assert receiver.posts[0]["body"]["source"] == POKEMON_SOURCE
+
+
+def test_catalog_cache_read_failure_posts_a_signal(
+    tmp_path: Path, monkeypatch, signals
+) -> None:
+    receiver = signals
+    _empty_cache_env(tmp_path, monkeypatch)
+
+    def boom_load(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("pokemon_world_mcp.catalog_cache._load_sqlite", boom_load)
+    monkeypatch.setattr("pokemon_world_mcp.catalog_cache._load_postgres", boom_load)
+    monkeypatch.setattr(
+        "pokemon_world_mcp.catalog._fetch_species",
+        lambda *_a, **_k: _fallback_species(),
+    )
+    monkeypatch.setattr(
+        "pokemon_world_mcp.catalog._refresh_growth_tables",
+        lambda **_k: None,
+    )
+
+    Catalog.load(timeout=0.1)
+    _wait_until(
+        lambda: any(
+            "failed to load catalog cache" in post["body"]["message"]
             for post in receiver.posts
         )
     )
@@ -471,8 +500,6 @@ async def test_invalid_api_key_does_not_post_a_signal(monkeypatch, signals) -> N
 
 
 def test_a_failed_post_is_not_retried_and_is_not_another_signal(caplog, monkeypatch) -> None:
-    from pokemon_world_mcp.signal_forwarder import start_signal_forwarding
-
     receiver = _SignalsReceiver()
     receiver.fail_with(500)
     monkeypatch.setenv("VANS_SIGNALS_URL", receiver.url)
@@ -513,3 +540,57 @@ def test_warning_and_unrelated_logger_produce_no_signal(signals) -> None:
     logging.getLogger("vans_signals_forwarder").error("Signal post failed: ConnectError")
     time.sleep(0.15)
     assert receiver.posts == []
+
+
+def test_tool_call_does_not_wait_for_the_signal_post(monkeypatch) -> None:
+    receiver = _SignalsReceiver()
+    receiver.hold_responses()
+    monkeypatch.setenv("VANS_SIGNALS_URL", receiver.url)
+    monkeypatch.setenv("VANS_SIGNALS_TOKEN", "pokemon-token")
+    monkeypatch.setenv("VANS_SIGNALS_SOURCE", POKEMON_SOURCE)
+    forwarder = start_signal_forwarding()
+    assert forwarder is not None
+    monkeypatch.setattr(pokemon_app, "_require_user_id", lambda: 1)
+
+    def boom(_user_id: int):
+        raise RuntimeError("catalog exploded")
+
+    monkeypatch.setattr(pokemon_app.game, "get_status", boom)
+    try:
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="catalog exploded"):
+            pokemon_app.get_status()
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.5
+        receiver.release_responses()
+        _wait_until(lambda: len(receiver.posts) >= 1)
+        assert "catalog exploded" in receiver.posts[0]["body"]["message"]
+    finally:
+        receiver.release_responses()
+        forwarder.close()
+        receiver.close()
+
+
+def test_a_dead_destination_gives_up_after_about_two_seconds(caplog, monkeypatch) -> None:
+    receiver = _SignalsReceiver()
+    receiver.hold_responses()
+    monkeypatch.setenv("VANS_SIGNALS_URL", receiver.url)
+    monkeypatch.setenv("VANS_SIGNALS_TOKEN", "pokemon-token")
+    monkeypatch.setenv("VANS_SIGNALS_SOURCE", POKEMON_SOURCE)
+    forwarder = start_signal_forwarding()
+    assert forwarder is not None
+    try:
+        with caplog.at_level(logging.ERROR, logger="vans_signals_forwarder"):
+            started = time.monotonic()
+            logging.getLogger("pokemon_world_mcp.catalog").error("destination is dead")
+            assert time.monotonic() - started < 0.3
+            _wait_until(lambda: bool(_failure_logs(caplog)), timeout=3.5)
+        elapsed = time.monotonic() - started
+        assert 1.5 <= elapsed <= 3.0
+        assert len(receiver.posts) == 1
+        time.sleep(0.2)
+        assert len(receiver.posts) == 1
+    finally:
+        receiver.release_responses()
+        forwarder.close()
+        receiver.close()
