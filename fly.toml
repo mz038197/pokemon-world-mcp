@@ -6,6 +6,7 @@ primary_region = "sin"
 
 [env]
   PUBLIC_URL = "https://poke.vanscoding.com"
+  VANS_SIGNALS_SOURCE = "pokemon-world-mcp"
 
 [http_service]
   internal_port = 8080
