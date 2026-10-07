@@ -20,6 +20,7 @@ from pokemon_world_mcp.db import (
 )
 from pokemon_world_mcp.game import GameError, GameService, dumps
 from pokemon_world_mcp.save_store import PostgresSaveStore, SaveStore, SqliteSaveStore
+from pokemon_world_mcp.signal_forwarder import start_signal_forwarding
 
 def _log_level_from_env() -> int:
     name = (os.environ.get("LOG_LEVEL") or "INFO").strip().upper()
@@ -31,6 +32,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("pokemon_world_mcp")
+start_signal_forwarding()
 
 auth = VcrApiKeyVerifier.from_env()
 catalog = Catalog.load()
@@ -91,6 +93,9 @@ def _tool_result(fn, *args, **kwargs) -> str:
         return dumps(fn(*args, **kwargs))
     except GameError as exc:
         return dumps({"ok": False, "error": str(exc)})
+    except Exception:
+        logger.exception("unexpected tool failure")
+        raise
 
 
 @mcp.tool(
@@ -109,7 +114,7 @@ def new_game(starter: str) -> str:
     Args:
         starter: Required. One of: bulbasaur, charmander, squirtle.
     """
-    return _tool_result(game.new_game, _require_user_id(), starter)
+    return _tool_result(lambda: game.new_game(_require_user_id(), starter))
 
 
 @mcp.tool(
@@ -124,7 +129,7 @@ def new_game(starter: str) -> str:
 )
 def get_status() -> str:
     """Return phase, position, party summary, and win flag."""
-    return _tool_result(game.get_status, _require_user_id())
+    return _tool_result(lambda: game.get_status(_require_user_id()))
 
 
 @mcp.tool(
@@ -139,7 +144,7 @@ def get_status() -> str:
 )
 def look() -> str:
     """Show a 3x3 view around the player (exploring only)."""
-    return _tool_result(game.look, _require_user_id())
+    return _tool_result(lambda: game.look(_require_user_id()))
 
 
 @mcp.tool(
@@ -158,7 +163,7 @@ def move(direction: str) -> str:
     Args:
         direction: Cardinal direction N/S/E/W.
     """
-    return _tool_result(game.move, _require_user_id(), direction)
+    return _tool_result(lambda: game.move(_require_user_id(), direction))
 
 
 @mcp.tool(
@@ -173,7 +178,7 @@ def move(direction: str) -> str:
 )
 def party() -> str:
     """List party HP, types, and moves."""
-    return _tool_result(game.party, _require_user_id())
+    return _tool_result(lambda: game.party(_require_user_id()))
 
 
 @mcp.tool(
@@ -188,7 +193,7 @@ def party() -> str:
 )
 def battle_status() -> str:
     """Show your active pokemon, enemy HP/types, and available moves."""
-    return _tool_result(game.battle_status, _require_user_id())
+    return _tool_result(lambda: game.battle_status(_require_user_id()))
 
 
 @mcp.tool(
@@ -214,11 +219,12 @@ def battle_action(
         forget_move_name: Required when action is replace_move.
     """
     return _tool_result(
-        game.battle_action,
-        _require_user_id(),
-        action,
-        move_name,
-        forget_move_name,
+        lambda: game.battle_action(
+            _require_user_id(),
+            action,
+            move_name,
+            forget_move_name,
+        )
     )
 
 
