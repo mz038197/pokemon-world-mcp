@@ -3,7 +3,7 @@
 ## 事前
 
 - `flyctl auth login`
-- **一個**遊戲 Neon／Postgres：`POKEMON_DATABASE_URL`（`pokemon_saves`、`pokemon_catalog_cache`）。不設定 router 的 `DATABASE_URL`，也不開 router 的資料庫。
+- **一個**遊戲 Neon 專案 `pokemon_world_db`：`POKEMON_DATABASE_URL`（`pokemon_saves`、`pokemon_catalog_cache`）。不設定 router 的 `DATABASE_URL`，也不開 router 的 `neondb`。
 - 自訂網域（選用）：Squarespace DNS `poke.vanscoding.com` → Fly；`fly certs add poke.vanscoding.com`
 - 無 Fly volume；遊戲狀態在 `POKEMON_DATABASE_URL`。本機 SQLite ≠ production。
 
