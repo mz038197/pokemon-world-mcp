@@ -4,7 +4,7 @@ Agent playground: explore a small map, battle and catch real-named Pokémon via 
 
 - **Public URL (planned):** `https://poke.vanscoding.com`
 - **MCP endpoint:** `https://poke.vanscoding.com/mcp/` (local: `http://127.0.0.1:8080/mcp/`)
-- **Auth:** same as vans-mcp — `Authorization: Bearer vcr_sk_...` (router Neon `api_keys` via `DATABASE_URL`) or local `MCP_DEV_BYPASS_KEY`
+- **Auth:** `Authorization: Bearer vcr_sk_...`. A signed Classroom API Key is checked here; a legacy key is sent to the router at `POST /internal/legacy-key`. This service does not open the router database. Local bypass: `MCP_DEV_BYPASS_KEY`
 - **Saves / catalog:** game Neon `POKEMON_DATABASE_URL` (`pokemon_saves`, `pokemon_catalog_cache`); otherwise local SQLite under `$HOME/.pokemon-world-mcp/`
 - **Catalog cache:** if missing or older than **24h** (`CATALOG_CACHE_TTL_HOURS`), fetch PokéAPI and write the game DB. Fresh cache skips the API. Long-running processes re-check via `ensure_fresh`. API failure uses in-memory fallback and does **not** write fallback to DB.
 
@@ -47,8 +47,6 @@ Tip for student agents: **after each tool call, narrate the result to the human 
 cd C:\Users\mz038\Desktop\peas-agent\pokemon-world-mcp
 uv sync --extra dev
 $env:MCP_DEV_BYPASS_KEY = "vcr_sk_dev_local_only"
-# Optional — router Neon (api_keys):
-# $env:DATABASE_URL = "postgresql://..."
 # Optional — game Neon (saves + catalog); without this, SQLite is used:
 # $env:POKEMON_DATABASE_URL = "postgresql://..."
 uv run pokemon-world-mcp
@@ -59,7 +57,7 @@ Without `POKEMON_DATABASE_URL`, player saves and the catalog cache both live in 
 - Health: `http://127.0.0.1:8080/health` (no key)
 - MCP: `http://127.0.0.1:8080/mcp/` with Bearer header
 
-Production on Fly must set both `DATABASE_URL` (router) and `POKEMON_DATABASE_URL` (game) — see [docs/deploy-fly.md](docs/deploy-fly.md).
+Production on Fly sets `POKEMON_DATABASE_URL` (game) and does not set the router database — see [docs/deploy-fly.md](docs/deploy-fly.md).
 
 ## Tests
 
