@@ -3,7 +3,8 @@
 ## 事前
 
 - `flyctl auth login`
-- **一個**遊戲 Neon 專案 `pokemon_world_db`：`POKEMON_DATABASE_URL`（`pokemon_saves`、`pokemon_catalog_cache`）。不設定 router 的 `DATABASE_URL`，也不開 router 的 `neondb`。
+- **一個**遊戲 Neon 專案 `pokemon_world_db`：`POKEMON_DATABASE_URL`（`pokemon_saves`、`pokemon_catalog_cache`）。那組帳號不動。
+- 驗票改成簽章之前，Fly secret 裡既有的 `neondb_owner` 仍用來連 router 的 `neondb`。一切換就拿掉這條連線，不另建暫時 role。之後不設定 router 的 `DATABASE_URL`。
 - 自訂網域（選用）：Squarespace DNS `poke.vanscoding.com` → Fly；`fly certs add poke.vanscoding.com`
 - 無 Fly volume；遊戲狀態在 `POKEMON_DATABASE_URL`。本機 SQLite ≠ production。
 
