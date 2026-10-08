@@ -3,9 +3,7 @@
 ## 事前
 
 - `flyctl auth login`
-- **兩個** Neon／Postgres：
-  - `DATABASE_URL`：與 `vans-mcp-server` / `vans-coding-router` **同一** router DB（只讀／更新 `api_keys`）
-  - `POKEMON_DATABASE_URL`：**本專案專用**遊戲 DB（`pokemon_saves`、`pokemon_catalog_cache`）
+- **一個**遊戲 Neon／Postgres：`POKEMON_DATABASE_URL`（`pokemon_saves`、`pokemon_catalog_cache`）。不設定 router 的 `DATABASE_URL`，也不開 router 的資料庫。
 - 自訂網域（選用）：Squarespace DNS `poke.vanscoding.com` → Fly；`fly certs add poke.vanscoding.com`
 - 無 Fly volume；遊戲狀態在 `POKEMON_DATABASE_URL`。本機 SQLite ≠ production。
 
@@ -20,7 +18,6 @@ notepad "$HOME\.pokemon-world-mcp\fly.secrets.env"
 
 | Secret | 說明 |
 |--------|------|
-| `DATABASE_URL` | Router Neon（`api_keys`；與 vans 相同） |
 | `POKEMON_DATABASE_URL` | 遊戲 Neon（存檔＋圖鑑快取；**必須與 router 不同**） |
 
 `PUBLIC_URL` 放在 `fly.toml` 的 `[env]`，不要設成 Fly secret。
@@ -41,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1 -SecretsOnly
 
 可用 `SQLITE_PATH` 覆寫。**不要**把 `*.db` commit 進 repo。Production 請用 `POKEMON_DATABASE_URL`，不要依賴 Fly 容器內 SQLite。
 
-本機驗證仍可用 `DATABASE_URL`（router）或 `MCP_DEV_BYPASS_KEY`。
+本機驗證可用 `MCP_DEV_BYPASS_KEY`。Production 不連 router 的資料庫。
 
 ## 圖鑑快取
 
@@ -53,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1 -SecretsOnly
 
 ## 切換後清理 router Postgres
 
-新遊戲 DB 部署並驗證 health／存檔／圖鑑後，從 **router**（`DATABASE_URL`）刪除本專案舊表（**不動** `api_keys`）：
+這是早先把遊戲表搬離 router 的一次性清理。執行中的服務不設定 router 的 `DATABASE_URL`。若舊遊戲表還在 router 上，用 router 的連線字串刪除它們（**不動** `api_keys`）：
 
 ```powershell
 $env:DATABASE_URL = "postgresql://...router..."
@@ -103,10 +100,10 @@ curl https://pokemon-world-mcp.fly.dev/health
 curl https://poke.vanscoding.com/health
 ```
 
-Health 應含 `"ok": true`、`auth`（有 router Neon 時為 `neon`）、`saves`（production 應為 `postgres`）。
+Health 應含 `"ok": true` 與 `saves`（production 應為 `postgres`）。驗票不靠 router 的資料庫。
 
 ## 與 vans 的關係
 
 - App 分開：本服務只做 Pokémon World MCP；Notion／Calendar／Gmail 仍在 `vans-mcp-server`
-- 共用 router Neon 的 `api_keys`：學生同一把 `vcr_sk_` 可驗證
+- 不開 router 的資料庫，不讀 `api_keys`。學生同一把 `vcr_sk_`：簽章票在本服務自己驗，並對停用名單；舊格式金鑰送到 router 的 `POST /internal/legacy-key`
 - 遊戲表在獨立 Neon；啟動時對 `POKEMON_DATABASE_URL` 執行 `CREATE TABLE IF NOT EXISTS`
