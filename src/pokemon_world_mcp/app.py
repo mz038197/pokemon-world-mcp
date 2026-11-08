@@ -14,7 +14,6 @@ from starlette.routing import Mount, Route
 from pokemon_world_mcp.auth import VcrApiKeyVerifier, api_key_http_middleware
 from pokemon_world_mcp.catalog import Catalog
 from pokemon_world_mcp.db import (
-    database_url_from_env,
     pokemon_database_url_from_env,
     sqlite_path_from_env,
 )
@@ -228,27 +227,31 @@ def battle_action(
     )
 
 
-async def health(_request: Request) -> JSONResponse:
-    auth_mode = "neon" if database_url_from_env() else "bypass_or_unconfigured"
-    return JSONResponse(
-        {
-            "ok": True,
-            "service": "pokemon-world-mcp",
-            "public_url": os.environ.get("PUBLIC_URL", "https://poke.vanscoding.com"),
-            "auth": auth_mode,
-            "saves": _save_backend,
-        }
+def create_app(verifier: VcrApiKeyVerifier) -> Starlette:
+    """The HTTP app: ``/health`` and the MCP endpoint behind ``verifier``."""
+
+    async def health(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "ok": True,
+                "service": "pokemon-world-mcp",
+                "public_url": os.environ.get("PUBLIC_URL", "https://poke.vanscoding.com"),
+                "auth": verifier.auth_mode,
+                "saves": _save_backend,
+            }
+        )
+
+    mcp_app = mcp.http_app(path="/")
+    for mw in reversed(api_key_http_middleware(verifier)):
+        mcp_app.add_middleware(mw.cls, *mw.args, **mw.kwargs)
+
+    return Starlette(
+        routes=[
+            Route("/health", health, methods=["GET"]),
+            Mount("/mcp", app=mcp_app),
+        ],
+        lifespan=mcp_app.lifespan,
     )
 
 
-mcp_app = mcp.http_app(path="/")
-for mw in reversed(api_key_http_middleware(auth)):
-    mcp_app.add_middleware(mw.cls, *mw.args, **mw.kwargs)
-
-app = Starlette(
-    routes=[
-        Route("/health", health, methods=["GET"]),
-        Mount("/mcp", app=mcp_app),
-    ],
-    lifespan=mcp_app.lifespan,
-)
+app = create_app(auth)

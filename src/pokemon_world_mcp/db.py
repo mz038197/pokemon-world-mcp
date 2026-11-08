@@ -56,12 +56,6 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
-def database_url_from_env() -> str | None:
-    """Router Neon — api_keys only (auth)."""
-    raw = os.environ.get("DATABASE_URL") or None
-    return normalize_database_url(raw) if raw else None
-
-
 def pokemon_database_url_from_env() -> str | None:
     """Game Neon — pokemon_saves + pokemon_catalog_cache."""
     raw = os.environ.get("POKEMON_DATABASE_URL") or None

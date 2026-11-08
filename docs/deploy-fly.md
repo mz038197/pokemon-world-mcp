@@ -3,9 +3,9 @@
 ## 事前
 
 - `flyctl auth login`
-- **兩個** Neon／Postgres：
-  - `DATABASE_URL`：與 `vans-mcp-server` / `vans-coding-router` **同一** router DB（只讀／更新 `api_keys`）
-  - `POKEMON_DATABASE_URL`：**本專案專用**遊戲 DB（`pokemon_saves`、`pokemon_catalog_cache`）
+- 金鑰驗證走 router 的 Key Check（`POST https://ai.vanscoding.com/internal/key-check`），**不連** router 的資料庫
+- 本服務的 Service Credential：`openssl rand -hex 32` 產生，SHA-256 加進 router 的 `VCR_SERVICE_TOKENS`（router 的 guide/DEPLOYMENT.md「Service Credential（Key Check）」）
+- `POKEMON_DATABASE_URL`：**本專案專用**遊戲 DB（`pokemon_saves`、`pokemon_catalog_cache`）
 - 自訂網域（選用）：Squarespace DNS `poke.vanscoding.com` → Fly；`fly certs add poke.vanscoding.com`
 - 無 Fly volume；遊戲狀態在 `POKEMON_DATABASE_URL`。本機 SQLite ≠ production。
 
@@ -20,12 +20,14 @@ notepad "$HOME\.pokemon-world-mcp\fly.secrets.env"
 
 | Secret | 說明 |
 |--------|------|
-| `DATABASE_URL` | Router Neon（`api_keys`；與 vans 相同） |
-| `POKEMON_DATABASE_URL` | 遊戲 Neon（存檔＋圖鑑快取；**必須與 router 不同**） |
+| `VCR_SERVICE_CREDENTIAL` | 本服務呼叫 Key Check 用的 Service Credential（必填；沒設定時照樣啟動，但 router 回 401，所有金鑰都當作 unavailable，每次送一筆 ERROR Signal） |
+| `POKEMON_DATABASE_URL` | 遊戲 Neon（存檔＋圖鑑快取） |
+
+`VCR_URL` 預設 `https://ai.vanscoding.com`，通常不用設定。
 
 `PUBLIC_URL` 放在 `fly.toml` 的 `[env]`，不要設成 Fly secret。
 
-**不要**在 production 設定 `MCP_DEV_BYPASS_KEY`。
+**不要**在 production 設定 `MCP_DEV_BYPASS_KEY`：有 `FLY_APP_NAME` 又設定它時，服務拒絕啟動。
 
 套用 secrets：
 
@@ -41,7 +43,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1 -SecretsOnly
 
 可用 `SQLITE_PATH` 覆寫。**不要**把 `*.db` commit 進 repo。Production 請用 `POKEMON_DATABASE_URL`，不要依賴 Fly 容器內 SQLite。
 
-本機驗證仍可用 `DATABASE_URL`（router）或 `MCP_DEV_BYPASS_KEY`。
+本機驗證用 `MCP_DEV_BYPASS_KEY`，或設定 `VCR_SERVICE_CREDENTIAL` 走 Key Check。
 
 ## 圖鑑快取
 
@@ -51,17 +53,13 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-fly.ps1 -SecretsOnly
 - 同一進程超過 TTL：讀取圖鑑時 `ensure_fresh` 會重載
 - PokéAPI 失敗：記憶體 fallback；**不**把 fallback 寫進 DB
 
-## 切換後清理 router Postgres
+## 改用 Key Check（移除 router 的 `DATABASE_URL`）
 
-新遊戲 DB 部署並驗證 health／存檔／圖鑑後，從 **router**（`DATABASE_URL`）刪除本專案舊表（**不動** `api_keys`）：
-
-```powershell
-$env:DATABASE_URL = "postgresql://...router..."
-$env:POKEMON_DATABASE_URL = "postgresql://...game..."
-uv run python scripts\drop_router_pokemon_tables.py --yes
-```
-
-腳本會拒絕在兩個 URL 相同時執行。
+1. router 的 `VCR_SERVICE_TOKENS` 已有本服務 credential 的雜湊並已部署
+2. `fly secrets set VCR_SERVICE_CREDENTIAL=...`（或寫進 `fly.secrets.env` 後 `deploy-fly.ps1 -SecretsOnly`）
+3. 部署本版
+4. `fly secrets unset DATABASE_URL`（`deploy-fly.ps1` 只會 set，不會 unset）
+5. 驗證：`/health` 的 `auth` 為 `key_check`；用學生金鑰呼叫工具，存檔仍在
 
 ## 首次開通
 
@@ -103,10 +101,10 @@ curl https://pokemon-world-mcp.fly.dev/health
 curl https://poke.vanscoding.com/health
 ```
 
-Health 應含 `"ok": true`、`auth`（有 router Neon 時為 `neon`）、`saves`（production 應為 `postgres`）。
+Health 應含 `"ok": true`、`auth`（`key_check`）、`saves`（production 應為 `postgres`）。
 
 ## 與 vans 的關係
 
 - App 分開：本服務只做 Pokémon World MCP；Notion／Calendar／Gmail 仍在 `vans-mcp-server`
-- 共用 router Neon 的 `api_keys`：學生同一把 `vcr_sk_` 可驗證
+- 學生同一把 `vcr_sk_` 透過 router 的 Key Check 驗證；存檔用 router 的整數 `user_id`（Classroom 的 `student_id`、Personal 的 `user_id`）
 - 遊戲表在獨立 Neon；啟動時對 `POKEMON_DATABASE_URL` 執行 `CREATE TABLE IF NOT EXISTS`

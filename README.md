@@ -4,7 +4,7 @@ Agent playground: explore a small map, battle and catch real-named Pokémon via 
 
 - **Public URL (planned):** `https://poke.vanscoding.com`
 - **MCP endpoint:** `https://poke.vanscoding.com/mcp/` (local: `http://127.0.0.1:8080/mcp/`)
-- **Auth:** same as vans-mcp — `Authorization: Bearer vcr_sk_...` (router Neon `api_keys` via `DATABASE_URL`) or local `MCP_DEV_BYPASS_KEY`
+- **Auth:** `Authorization: Bearer vcr_sk_...` (Classroom or Personal API Key), checked by the router's Key Check (`POST {VCR_URL}/internal/key-check` with this service's `VCR_SERVICE_CREDENTIAL`), or local `MCP_DEV_BYPASS_KEY`. An accepted answer is kept 60 s; a refusal is a plain 401 with the JSON body `{"error": "unauthorized", "message": <router notice>}` (the same as vans-mcp-server). No connection to the router database.
 - **Saves / catalog:** game Neon `POKEMON_DATABASE_URL` (`pokemon_saves`, `pokemon_catalog_cache`); otherwise local SQLite under `$HOME/.pokemon-world-mcp/`
 - **Catalog cache:** if missing or older than **24h** (`CATALOG_CACHE_TTL_HOURS`), fetch PokéAPI and write the game DB. Fresh cache skips the API. Long-running processes re-check via `ensure_fresh`. API failure uses in-memory fallback and does **not** write fallback to DB.
 
@@ -47,8 +47,8 @@ Tip for student agents: **after each tool call, narrate the result to the human 
 cd C:\Users\mz038\Desktop\peas-agent\pokemon-world-mcp
 uv sync --extra dev
 $env:MCP_DEV_BYPASS_KEY = "vcr_sk_dev_local_only"
-# Optional — router Neon (api_keys):
-# $env:DATABASE_URL = "postgresql://..."
+# Optional — real keys through the router's Key Check:
+# $env:VCR_SERVICE_CREDENTIAL = "..."   # VCR_URL defaults to https://ai.vanscoding.com
 # Optional — game Neon (saves + catalog); without this, SQLite is used:
 # $env:POKEMON_DATABASE_URL = "postgresql://..."
 uv run pokemon-world-mcp
@@ -59,7 +59,7 @@ Without `POKEMON_DATABASE_URL`, player saves and the catalog cache both live in 
 - Health: `http://127.0.0.1:8080/health` (no key)
 - MCP: `http://127.0.0.1:8080/mcp/` with Bearer header
 
-Production on Fly must set both `DATABASE_URL` (router) and `POKEMON_DATABASE_URL` (game) — see [docs/deploy-fly.md](docs/deploy-fly.md).
+Production on Fly must set `VCR_SERVICE_CREDENTIAL` (without it the router answers 401, so every key is unavailable and each try sends an ERROR Signal) and `POKEMON_DATABASE_URL`, and must not set `MCP_DEV_BYPASS_KEY` (the service refuses to start when it is set on Fly) — see [docs/deploy-fly.md](docs/deploy-fly.md).
 
 ## Tests
 
