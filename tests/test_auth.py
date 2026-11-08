@@ -3,11 +3,45 @@ from __future__ import annotations
 import pytest
 
 from pokemon_world_mcp.auth import RequireApiKeyMiddleware, VcrApiKeyVerifier, normalize_api_key
+from pokemon_world_mcp.key_check import DEFAULT_VCR_URL
+
+
+def test_the_bypass_key_starts_locally() -> None:
+    verifier = VcrApiKeyVerifier.from_env({"MCP_DEV_BYPASS_KEY": "vcr_sk_dev"})
+    assert verifier.bypass_key == "vcr_sk_dev"
+
+
+def test_the_bypass_key_refuses_to_start_in_production() -> None:
+    with pytest.raises(RuntimeError, match="MCP_DEV_BYPASS_KEY"):
+        VcrApiKeyVerifier.from_env(
+            {
+                "FLY_APP_NAME": "pokemon-world-mcp",
+                "MCP_DEV_BYPASS_KEY": "vcr_sk_dev",
+                "VCR_SERVICE_CREDENTIAL": "credential",
+            }
+        )
+
+
+def test_production_refuses_to_start_without_a_service_credential() -> None:
+    with pytest.raises(RuntimeError, match="VCR_SERVICE_CREDENTIAL"):
+        VcrApiKeyVerifier.from_env({"FLY_APP_NAME": "pokemon-world-mcp"})
+
+
+def test_production_with_a_service_credential_uses_the_key_check() -> None:
+    verifier = VcrApiKeyVerifier.from_env(
+        {"FLY_APP_NAME": "pokemon-world-mcp", "VCR_SERVICE_CREDENTIAL": "credential"}
+    )
+    assert verifier.auth_mode == "key_check"
+    assert verifier.bypass_key == ""
+
+
+def test_vcr_url_defaults_to_the_public_router() -> None:
+    assert DEFAULT_VCR_URL == "https://ai.vanscoding.com"
 
 
 @pytest.mark.asyncio
 async def test_bypass_key_accepts() -> None:
-    v = VcrApiKeyVerifier(database_url=None, bypass_key="vcr_sk_dev")
+    v = VcrApiKeyVerifier(bypass_key="vcr_sk_dev")
     token = await v.verify_token("vcr_sk_dev")
     assert token is not None
     assert token.claims["user_id"] == 0
@@ -15,8 +49,8 @@ async def test_bypass_key_accepts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wrong_key_rejected_without_db() -> None:
-    v = VcrApiKeyVerifier(database_url=None, bypass_key="vcr_sk_dev")
+async def test_wrong_key_rejected_without_key_check() -> None:
+    v = VcrApiKeyVerifier(bypass_key="vcr_sk_dev")
     assert await v.verify_token("vcr_sk_other") is None
 
 
@@ -42,6 +76,6 @@ async def test_require_api_key_401_content_length_matches_body() -> None:
     headers = dict(sent[0]["headers"])
     body = sent[1]["body"]
     assert headers[b"content-length"] == str(len(body)).encode("ascii")
-    assert len(body) == 24
+    assert body.decode("utf-8") == "無效的 API 金鑰"
     # Must not advertise OAuth (no WWW-Authenticate) or VS Code starts DCR.
     assert b"www-authenticate" not in {k.lower() for k in headers}

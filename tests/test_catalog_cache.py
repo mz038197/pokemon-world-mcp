@@ -21,7 +21,6 @@ from pokemon_world_mcp.models import MoveInfo, Species
 
 
 def _clear_db_env(monkeypatch) -> None:
-    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("POKEMON_DATABASE_URL", raising=False)
     Catalog._set_api_fail_at(None)
 

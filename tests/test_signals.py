@@ -12,11 +12,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from pokemon_world_mcp.auth import VcrApiKeyVerifier
 from pokemon_world_mcp.catalog import Catalog, _fallback_species, _fetch_type_chart
 from pokemon_world_mcp.game import GameService
+from pokemon_world_mcp.key_check import KeyCheckClient
 from pokemon_world_mcp.save_store import MemorySaveStore
 from pokemon_world_mcp.signal_forwarder import SignalForwarder, start_signal_forwarding
 
@@ -24,7 +26,6 @@ POKEMON_SOURCE = "pokemon-world-mcp"
 EXAMPLE_PATH = Path(__file__).resolve().parent / "fixtures" / "signal_body.example.json"
 
 os.environ["SQLITE_PATH"] = "/tmp/pokemon-world-mcp-signals-import.db"
-os.environ.pop("DATABASE_URL", None)
 os.environ.pop("POKEMON_DATABASE_URL", None)
 os.environ["VANS_SIGNALS_URL"] = "http://127.0.0.1:9"
 os.environ["VANS_SIGNALS_TOKEN"] = "pokemon-token"
@@ -161,7 +162,6 @@ def signals(monkeypatch):
 
 
 def _empty_cache_env(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("POKEMON_DATABASE_URL", raising=False)
     monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "catalog.db"))
     Catalog._set_api_fail_at(None)
@@ -462,37 +462,45 @@ def test_missing_user_id_in_a_tool_posts_a_signal(monkeypatch, signals) -> None:
     assert receiver.posts[0]["body"]["source"] == POKEMON_SOURCE
 
 
-@pytest.mark.asyncio
-async def test_api_key_db_error_posts_a_signal(monkeypatch, signals) -> None:
-    receiver = signals
-    verifier = VcrApiKeyVerifier(
-        database_url="postgresql://unused",
-        bypass_key=None,
-    )
+_SIGNAL_KEY = "vcr_sk_" + "d4" * 32
 
-    def boom(_token: str):
-        raise RuntimeError("connection refused")
 
-    monkeypatch.setattr(verifier.store, "verify", boom)
-    token = await verifier.verify_token("vcr_sk_test")
-    assert token is None
-    _wait_until(
-        lambda: any(
-            "API key verification failed" in post["body"]["message"]
-            for post in receiver.posts
+def _key_check_verifier(status: int, body: dict) -> VcrApiKeyVerifier:
+    router = httpx.MockTransport(lambda _request: httpx.Response(status, json=body))
+    return VcrApiKeyVerifier(
+        key_check=KeyCheckClient(
+            vcr_url="https://router.test",
+            service_credential="pokemon-credential",
+            transport=router,
         )
     )
-    assert receiver.posts[0]["body"]["source"] == POKEMON_SOURCE
 
 
 @pytest.mark.asyncio
-async def test_invalid_api_key_does_not_post_a_signal(monkeypatch, signals) -> None:
+async def test_a_failed_key_check_posts_one_signal_with_only_the_key_prefix(signals) -> None:
     receiver = signals
-    verifier = VcrApiKeyVerifier(
-        database_url="postgresql://unused",
-        bypass_key=None,
+    verifier = _key_check_verifier(503, {"error": "down"})
+
+    token = await verifier.verify_token(_SIGNAL_KEY)
+
+    assert token is None
+    _wait_until(lambda: len(receiver.posts) >= 1)
+    time.sleep(0.15)
+    assert len(receiver.posts) == 1
+    body = receiver.posts[0]["body"]
+    assert body["source"] == POKEMON_SOURCE
+    assert body["level"] == "ERROR"
+    assert _SIGNAL_KEY[:14] in body["message"]
+    assert _SIGNAL_KEY not in json.dumps(receiver.posts)
+    assert "pokemon-credential" not in json.dumps(receiver.posts)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_api_key_does_not_post_a_signal(signals) -> None:
+    receiver = signals
+    verifier = _key_check_verifier(
+        200, {"accepted": False, "reason": "invalid", "message": "無效的 API 金鑰"}
     )
-    monkeypatch.setattr(verifier.store, "verify", lambda _token: None)
     token = await verifier.verify_token("vcr_sk_bad")
     assert token is None
     time.sleep(0.15)

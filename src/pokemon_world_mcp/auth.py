@@ -1,28 +1,40 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
-from dataclasses import dataclass
-from datetime import datetime, timezone
-
-import psycopg
-from psycopg.rows import dict_row
+from collections.abc import Mapping
 
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
-from mcp.server.auth.middleware.bearer_auth import (
-    AuthenticatedUser,
-    BearerAuthBackend,
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from starlette.authentication import (
+    AuthCredentials,
+    AuthenticationBackend,
+    AuthenticationError,
 )
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.requests import HTTPConnection
+from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp.server.auth import AccessToken, TokenVerifier
 
+from pokemon_world_mcp.key_check import (
+    DEFAULT_VCR_URL,
+    INVALID_NOTICE,
+    UNAVAILABLE,
+    Identity,
+    KeyCheckClient,
+    Refusal,
+    key_prefix,
+)
+
 logger = logging.getLogger(__name__)
 
-VCR_KEY_PREFIX = "vcr_sk_"
+VCR_URL_ENV = "VCR_URL"
+SERVICE_CREDENTIAL_ENV = "VCR_SERVICE_CREDENTIAL"
+BYPASS_KEY_ENV = "MCP_DEV_BYPASS_KEY"
+PRODUCTION_ENV = "FLY_APP_NAME"
 
 
 def normalize_api_key(api_key: str | None) -> str:
@@ -31,113 +43,8 @@ def normalize_api_key(api_key: str | None) -> str:
     return api_key.strip()
 
 
-def hash_api_key(api_key: str) -> str:
-    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-
-
-def _normalize_database_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        return "postgresql://" + url[len("postgres://") :]
-    return url
-
-
-def _parse_dt(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-@dataclass(frozen=True)
-class AuthContext:
-    user_id: int
-    email: str | None
-    name: str | None
-    api_key_id: int
-    key_prefix: str
-    role: str | None = None
-
-
-class ApiKeyStore:
-    """Minimal vcr_sk_ verification against the Vans Coding Router Neon schema."""
-
-    def __init__(self, database_url: str) -> None:
-        self.database_url = _normalize_database_url(database_url)
-
-    def verify(self, api_key: str) -> AuthContext | None:
-        api_key = normalize_api_key(api_key)
-        if not api_key:
-            return None
-        key_hash = hash_api_key(api_key)
-        now = datetime.now(timezone.utc)
-        with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
-            row = conn.execute(
-                """
-                SELECT k.id AS api_key_id,
-                       k.key_prefix,
-                       k.enabled,
-                       k.expires_at,
-                       k.session_id,
-                       u.id AS user_id,
-                       u.email,
-                       u.name,
-                       u.role,
-                       u.status AS user_status,
-                       s.expires_at AS session_expires_at,
-                       s.status AS session_status,
-                       c.status AS class_status,
-                       c.ends_at AS class_ends_at
-                FROM api_keys k
-                JOIN users u ON u.id = k.user_id
-                LEFT JOIN class_sessions s ON s.id = k.session_id
-                LEFT JOIN classes c ON c.id = s.class_id
-                WHERE k.key_hash = %s
-                """,
-                (key_hash,),
-            ).fetchone()
-            if not row:
-                return None
-            if not bool(row["enabled"]):
-                return None
-            if row["user_status"] != "active":
-                return None
-            expires_at = _parse_dt(row["expires_at"])
-            if expires_at and now >= expires_at:
-                return None
-            session_expires_at = _parse_dt(row["session_expires_at"])
-            if row["session_id"] and session_expires_at and now >= session_expires_at:
-                return None
-            class_ends_at = _parse_dt(row["class_ends_at"])
-            if row["session_id"] and (
-                row["class_status"] != "active"
-                or (class_ends_at and now >= class_ends_at)
-            ):
-                return None
-            conn.execute(
-                "UPDATE api_keys SET last_used_at = %s WHERE id = %s",
-                (now.isoformat(), row["api_key_id"]),
-            )
-            conn.commit()
-            return AuthContext(
-                user_id=int(row["user_id"]),
-                email=row["email"],
-                name=row["name"],
-                api_key_id=int(row["api_key_id"]),
-                key_prefix=str(row["key_prefix"]),
-                role=row["role"],
-            )
-
-
 class VcrApiKeyVerifier(TokenVerifier):
-    """Bearer vcr_sk_ → Neon api_keys (or local bypass). Same behaviour as vans-mcp.
+    """Bearer vcr_sk_ -> the router's Key Check (or the local bypass key).
 
     Intentionally does not set ``base_url`` / resource metadata. Advertising
     ``resource_metadata`` makes VS Code / Cursor start an OAuth DCR flow and
@@ -147,26 +54,43 @@ class VcrApiKeyVerifier(TokenVerifier):
     def __init__(
         self,
         *,
-        database_url: str | None = None,
+        key_check: KeyCheckClient | None = None,
         bypass_key: str | None = None,
     ) -> None:
-        # base_url=None → no RFC 9728 resource_metadata on 401 WWW-Authenticate
+        # base_url=None -> no RFC 9728 resource_metadata on 401 WWW-Authenticate
         super().__init__(base_url=None)
-        self.store = ApiKeyStore(database_url) if database_url else None
+        self.key_check = key_check
         self.bypass_key = normalize_api_key(bypass_key) if bypass_key else ""
 
     @classmethod
-    def from_env(cls) -> VcrApiKeyVerifier:
-        return cls(
-            database_url=os.environ.get("DATABASE_URL") or None,
-            bypass_key=os.environ.get("MCP_DEV_BYPASS_KEY") or None,
-        )
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> VcrApiKeyVerifier:
+        """Build from settings; refuse to start on a production misconfiguration."""
+        env = os.environ if environ is None else environ
+        production = bool((env.get(PRODUCTION_ENV) or "").strip())
+        bypass_key = (env.get(BYPASS_KEY_ENV) or "").strip()
+        credential = (env.get(SERVICE_CREDENTIAL_ENV) or "").strip()
+        if production and bypass_key:
+            raise RuntimeError(
+                f"{BYPASS_KEY_ENV} is set while {PRODUCTION_ENV} is set; refusing to start"
+            )
+        if production and not credential:
+            raise RuntimeError(
+                f"{SERVICE_CREDENTIAL_ENV} is required when {PRODUCTION_ENV} is set"
+            )
+        key_check = None
+        if credential:
+            key_check = KeyCheckClient(
+                vcr_url=(env.get(VCR_URL_ENV) or "").strip() or DEFAULT_VCR_URL,
+                service_credential=credential,
+            )
+        return cls(key_check=key_check, bypass_key=bypass_key or None)
 
-    async def verify_token(self, token: str) -> AccessToken | None:
+    @property
+    def auth_mode(self) -> str:
+        return "key_check" if self.key_check is not None else "bypass_or_unconfigured"
+
+    async def authenticate(self, token: str | None) -> AccessToken | Refusal:
         token = normalize_api_key(token)
-        if not token:
-            return None
-
         if self.bypass_key and token == self.bypass_key:
             return AccessToken(
                 token=token,
@@ -175,40 +99,75 @@ class VcrApiKeyVerifier(TokenVerifier):
                 expires_at=None,
                 claims={
                     "user_id": 0,
-                    "email": "dev@localhost",
-                    "name": "dev-bypass",
-                    "api_key_id": 0,
+                    "kind": "personal",
+                    "class_id": None,
                     "key_prefix": "dev",
                     "auth_mode": "bypass",
                 },
             )
+        if self.key_check is None:
+            logger.warning(
+                "%s unset and token %s is not %s",
+                SERVICE_CREDENTIAL_ENV,
+                key_prefix(token),
+                BYPASS_KEY_ENV,
+            )
+            return UNAVAILABLE
+        answer = await self.key_check.check(token)
+        if isinstance(answer, Refusal):
+            return answer
+        return _access_token(token, answer)
 
-        if self.store is None:
-            logger.warning("DATABASE_URL unset and token is not MCP_DEV_BYPASS_KEY")
-            return None
+    async def verify_token(self, token: str) -> AccessToken | None:
+        answer = await self.authenticate(token)
+        return answer if isinstance(answer, AccessToken) else None
 
-        try:
-            ctx = self.store.verify(token)
-        except Exception:
-            logger.exception("API key verification failed")
+
+def _access_token(token: str, identity: Identity) -> AccessToken:
+    # `user_id` is the Classroom `student_id` or the Personal `user_id`: the same
+    # router integer the saves are keyed by.
+    return AccessToken(
+        token=token,
+        client_id=str(identity.user_id),
+        scopes=["mcp:read"],
+        expires_at=None,
+        claims={
+            "user_id": identity.user_id,
+            "kind": identity.kind,
+            "class_id": identity.class_id,
+            "key_prefix": key_prefix(token),
+            "auth_mode": "key_check",
+        },
+    )
+
+
+def unauthorized_response(message: str) -> Response:
+    """Plain 401 whose body is the notice. No ``WWW-Authenticate: Bearer``."""
+    return Response(
+        content=message.encode("utf-8"),
+        status_code=401,
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+class KeyCheckAuthBackend(AuthenticationBackend):
+    """Bearer token -> ``AuthenticatedUser``; a refusal raises with its notice."""
+
+    def __init__(self, verifier: VcrApiKeyVerifier) -> None:
+        self.verifier = verifier
+
+    async def authenticate(self, conn: HTTPConnection):
+        header = conn.headers.get("authorization")
+        if not header or not header.lower().startswith("bearer "):
             return None
-        if ctx is None:
-            return None
-        return AccessToken(
-            token=token,
-            client_id=str(ctx.user_id),
-            scopes=["mcp:read"],
-            expires_at=None,
-            claims={
-                "user_id": ctx.user_id,
-                "email": ctx.email,
-                "name": ctx.name,
-                "api_key_id": ctx.api_key_id,
-                "key_prefix": ctx.key_prefix,
-                "role": ctx.role,
-                "auth_mode": "neon",
-            },
-        )
+        answer = await self.verifier.authenticate(header[7:])
+        if isinstance(answer, Refusal):
+            raise AuthenticationError(answer.message)
+        return AuthCredentials(answer.scopes), AuthenticatedUser(answer)
+
+
+def _refused(_conn: HTTPConnection, exc: AuthenticationError) -> Response:
+    return unauthorized_response(str(exc))
 
 
 class RequireApiKeyMiddleware:
@@ -219,39 +178,23 @@ class RequireApiKeyMiddleware:
     need a plain 401 so configured ``Authorization`` headers are used instead.
     """
 
-    _UNAUTHORIZED_BODY = b'{"error":"unauthorized"}'
-
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            user = scope.get("user")
-            if not isinstance(user, AuthenticatedUser):
-                body = self._UNAUTHORIZED_BODY
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 401,
-                        "headers": [
-                            (b"content-type", b"application/json"),
-                            (b"content-length", str(len(body)).encode("ascii")),
-                        ],
-                    }
-                )
-                await send(
-                    {
-                        "type": "http.response.body",
-                        "body": body,
-                    }
-                )
-                return
+        if scope["type"] == "http" and not isinstance(scope.get("user"), AuthenticatedUser):
+            await unauthorized_response(INVALID_NOTICE)(scope, receive, send)
+            return
         await self.app(scope, receive, send)
 
 
 def api_key_http_middleware(verifier: VcrApiKeyVerifier) -> list[Middleware]:
     return [
-        Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(verifier)),
+        Middleware(
+            AuthenticationMiddleware,
+            backend=KeyCheckAuthBackend(verifier),
+            on_error=_refused,
+        ),
         Middleware(AuthContextMiddleware),
         Middleware(RequireApiKeyMiddleware),
     ]
