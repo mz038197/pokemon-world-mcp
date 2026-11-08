@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -21,9 +22,6 @@ from fastmcp.server.auth import AccessToken, TokenVerifier
 
 from pokemon_world_mcp.key_check import (
     DEFAULT_VCR_URL,
-    INVALID_NOTICE,
-    UNAVAILABLE,
-    Identity,
     KeyCheckClient,
     Refusal,
     key_prefix,
@@ -35,6 +33,8 @@ VCR_URL_ENV = "VCR_URL"
 SERVICE_CREDENTIAL_ENV = "VCR_SERVICE_CREDENTIAL"
 BYPASS_KEY_ENV = "MCP_DEV_BYPASS_KEY"
 PRODUCTION_ENV = "FLY_APP_NAME"
+SCOPES = ["mcp:read"]
+BEARER = "bearer "
 
 
 def normalize_api_key(api_key: str | None) -> str:
@@ -54,7 +54,7 @@ class VcrApiKeyVerifier(TokenVerifier):
     def __init__(
         self,
         *,
-        key_check: KeyCheckClient | None = None,
+        key_check: KeyCheckClient,
         bypass_key: str | None = None,
     ) -> None:
         # base_url=None -> no RFC 9728 resource_metadata on 401 WWW-Authenticate
@@ -64,89 +64,100 @@ class VcrApiKeyVerifier(TokenVerifier):
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> VcrApiKeyVerifier:
-        """Build from settings; refuse to start on a production misconfiguration."""
+        """Build from settings; the bypass key refuses to start in production.
+
+        A missing ``VCR_SERVICE_CREDENTIAL`` does not stop the start: the router answers
+        401, so every key is unavailable and each try sends an ERROR Signal
+        (the same as vans-mcp-server).
+        """
         env = os.environ if environ is None else environ
         production = bool((env.get(PRODUCTION_ENV) or "").strip())
         bypass_key = (env.get(BYPASS_KEY_ENV) or "").strip()
-        credential = (env.get(SERVICE_CREDENTIAL_ENV) or "").strip()
         if production and bypass_key:
             raise RuntimeError(
                 f"{BYPASS_KEY_ENV} is set while {PRODUCTION_ENV} is set; refusing to start"
             )
-        if production and not credential:
-            raise RuntimeError(
-                f"{SERVICE_CREDENTIAL_ENV} is required when {PRODUCTION_ENV} is set"
-            )
-        key_check = None
-        if credential:
-            key_check = KeyCheckClient(
-                vcr_url=(env.get(VCR_URL_ENV) or "").strip() or DEFAULT_VCR_URL,
-                service_credential=credential,
-            )
+        key_check = KeyCheckClient(
+            vcr_url=(env.get(VCR_URL_ENV) or "").strip() or DEFAULT_VCR_URL,
+            service_credential=(env.get(SERVICE_CREDENTIAL_ENV) or "").strip(),
+        )
         return cls(key_check=key_check, bypass_key=bypass_key or None)
 
     @property
     def auth_mode(self) -> str:
-        return "key_check" if self.key_check is not None else "bypass_or_unconfigured"
+        return "key_check"
 
     async def authenticate(self, token: str | None) -> AccessToken | Refusal:
         token = normalize_api_key(token)
         if self.bypass_key and token == self.bypass_key:
-            return AccessToken(
-                token=token,
+            return _access_token(
+                token,
                 client_id="dev-bypass",
-                scopes=["mcp:read"],
-                expires_at=None,
-                claims={
-                    "user_id": 0,
-                    "kind": "personal",
-                    "class_id": None,
-                    "key_prefix": "dev",
-                    "auth_mode": "bypass",
-                },
+                user_id=0,
+                kind="personal",
+                class_id=None,
+                prefix="dev",
+                auth_mode="bypass",
             )
-        if self.key_check is None:
-            logger.warning(
-                "%s unset and token %s is not %s",
-                SERVICE_CREDENTIAL_ENV,
-                key_prefix(token),
-                BYPASS_KEY_ENV,
-            )
-            return UNAVAILABLE
         answer = await self.key_check.check(token)
         if isinstance(answer, Refusal):
             return answer
-        return _access_token(token, answer)
+        # `user_id` is the Classroom `student_id` or the Personal `user_id`: the same
+        # router integer the saves are keyed by.
+        return _access_token(
+            token,
+            client_id=str(answer.user_id),
+            user_id=answer.user_id,
+            kind=answer.kind,
+            class_id=answer.class_id,
+            prefix=key_prefix(token),
+            auth_mode="key_check",
+        )
 
     async def verify_token(self, token: str) -> AccessToken | None:
         answer = await self.authenticate(token)
         return answer if isinstance(answer, AccessToken) else None
 
 
-def _access_token(token: str, identity: Identity) -> AccessToken:
-    # `user_id` is the Classroom `student_id` or the Personal `user_id`: the same
-    # router integer the saves are keyed by.
+def _access_token(
+    token: str,
+    *,
+    client_id: str,
+    user_id: int,
+    kind: str,
+    class_id: int | None,
+    prefix: str,
+    auth_mode: str,
+) -> AccessToken:
+    """The one place the claims the tools read are built."""
     return AccessToken(
         token=token,
-        client_id=str(identity.user_id),
-        scopes=["mcp:read"],
+        client_id=client_id,
+        scopes=SCOPES,
         expires_at=None,
         claims={
-            "user_id": identity.user_id,
-            "kind": identity.kind,
-            "class_id": identity.class_id,
-            "key_prefix": key_prefix(token),
-            "auth_mode": "key_check",
+            "user_id": user_id,
+            "kind": kind,
+            "class_id": class_id,
+            "key_prefix": prefix,
+            "auth_mode": auth_mode,
         },
     )
 
 
-def unauthorized_response(message: str) -> Response:
-    """Plain 401 whose body is the notice. No ``WWW-Authenticate: Bearer``."""
+def unauthorized_response(message: str | None = None) -> Response:
+    """Plain 401, the same body as vans-mcp-server: ``{"error": "unauthorized", "message": ...}``.
+
+    ``message`` is the router's notice, left out when there was no key to check.
+    No ``WWW-Authenticate: Bearer``, so VS Code keeps the configured header.
+    """
+    body: dict = {"error": "unauthorized"}
+    if message:
+        body["message"] = message
     return Response(
-        content=message.encode("utf-8"),
+        json.dumps(body, ensure_ascii=False),
         status_code=401,
-        media_type="text/plain; charset=utf-8",
+        media_type="application/json",
     )
 
 
@@ -158,9 +169,9 @@ class KeyCheckAuthBackend(AuthenticationBackend):
 
     async def authenticate(self, conn: HTTPConnection):
         header = conn.headers.get("authorization")
-        if not header or not header.lower().startswith("bearer "):
+        if not header or not header.lower().startswith(BEARER):
             return None
-        answer = await self.verifier.authenticate(header[7:])
+        answer = await self.verifier.authenticate(header[len(BEARER) :])
         if isinstance(answer, Refusal):
             raise AuthenticationError(answer.message)
         return AuthCredentials(answer.scopes), AuthenticatedUser(answer)
@@ -183,7 +194,7 @@ class RequireApiKeyMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and not isinstance(scope.get("user"), AuthenticatedUser):
-            await unauthorized_response(INVALID_NOTICE)(scope, receive, send)
+            await unauthorized_response()(scope, receive, send)
             return
         await self.app(scope, receive, send)
 

@@ -60,14 +60,10 @@ def store(monkeypatch) -> MemorySaveStore:
 
 def _client(router: FakeRouter | None = None, *, bypass_key: str | None = None) -> TestClient:
     pokemon_app = _app_module()
-    key_check = (
-        KeyCheckClient(
-            vcr_url="https://router.test",
-            service_credential="pokemon-credential",
-            transport=httpx.MockTransport(router),
-        )
-        if router is not None
-        else None
+    key_check = KeyCheckClient(
+        vcr_url="https://router.test",
+        service_credential="pokemon-credential",
+        transport=httpx.MockTransport(router or FakeRouter({})),
     )
     verifier = VcrApiKeyVerifier(key_check=key_check, bypass_key=bypass_key)
     return TestClient(pokemon_app.create_app(verifier))
@@ -110,10 +106,14 @@ def _call_tool(client: TestClient, key: str, name: str, arguments: dict | None =
     return json.loads(content[0]["text"])
 
 
-def _assert_plain_401(response: httpx.Response, message: str) -> None:
+def _assert_plain_401(response: httpx.Response, message: str | None) -> None:
+    """The same 401 as vans-mcp-server: JSON with the router's message, no WWW-Authenticate."""
     assert response.status_code == 401
-    assert response.text == message
+    expected = {"error": "unauthorized"} if message is None else {"error": "unauthorized", "message": message}
+    assert response.json() == expected
+    assert response.headers["content-type"].startswith("application/json")
     assert response.headers["content-length"] == str(len(response.content))
+    assert "www-authenticate" not in {k.lower() for k in response.headers.keys()}
     assert "www-authenticate" not in {key.lower() for key in response.headers}
 
 
@@ -177,7 +177,7 @@ def test_no_authorization_header_gets_a_plain_401(store) -> None:
     with _client(router) as client:
         response = client.post("/mcp/", json={}, headers={"Accept": ACCEPT})
 
-    _assert_plain_401(response, "無效的 API 金鑰")
+    _assert_plain_401(response, None)
     assert router.calls == 0
 
 
@@ -189,8 +189,10 @@ def test_the_dev_bypass_key_plays_without_a_router(store) -> None:
     assert store.load(0) is not None
 
 
-def test_without_a_service_credential_a_real_key_is_refused_as_unavailable(store) -> None:
-    with _client(None, bypass_key="vcr_sk_dev_local_only") as client:
+def test_when_the_router_refuses_the_service_credential_a_real_key_is_unavailable(store) -> None:
+    router = FakeRouter({STUDENT_KEY: (401, {"error": {"code": "invalid_service_credential"}})})
+
+    with _client(router, bypass_key="vcr_sk_dev_local_only") as client:
         response = _rpc(client, STUDENT_KEY, "initialize")
 
     _assert_plain_401(response, "驗證服務暫時無法使用，請稍後再試")

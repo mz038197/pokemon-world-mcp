@@ -20,7 +20,7 @@ notepad "$HOME\.pokemon-world-mcp\fly.secrets.env"
 
 | Secret | 說明 |
 |--------|------|
-| `VCR_SERVICE_CREDENTIAL` | 本服務呼叫 Key Check 用的 Service Credential（必填，沒設定時拒絕啟動） |
+| `VCR_SERVICE_CREDENTIAL` | 本服務呼叫 Key Check 用的 Service Credential（必填；沒設定時照樣啟動，但 router 回 401，所有金鑰都當作 unavailable，每次送一筆 ERROR Signal） |
 | `POKEMON_DATABASE_URL` | 遊戲 Neon（存檔＋圖鑑快取） |
 
 `VCR_URL` 預設 `https://ai.vanscoding.com`，通常不用設定。
@@ -101,7 +101,7 @@ curl https://pokemon-world-mcp.fly.dev/health
 curl https://poke.vanscoding.com/health
 ```
 
-Health 應含 `"ok": true`、`auth`（設定了 `VCR_SERVICE_CREDENTIAL` 時為 `key_check`）、`saves`（production 應為 `postgres`）。
+Health 應含 `"ok": true`、`auth`（`key_check`）、`saves`（production 應為 `postgres`）。
 
 ## 與 vans 的關係
 

@@ -78,7 +78,7 @@ class KeyCheckClient:
     def __init__(
         self,
         *,
-        vcr_url: str = DEFAULT_VCR_URL,
+        vcr_url: str,
         service_credential: str,
         transport: httpx.AsyncBaseTransport | None = None,
         clock: Callable[[], float] = time.monotonic,
